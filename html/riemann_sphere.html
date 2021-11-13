@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta charset="utf-8">
+		<title>My first three.js app</title>
+		<style>
+			body { margin: 0; }
+		</style>
+	</head>
+	<body>
+		<script type="x-shader/x-vertex" id="vertexshader">
+       		attribute float scale;
+			void main() {
+				vec4 mvPosition = modelViewMatrix * vec4( position, 1.0 );
+				gl_PointSize = scale * ( 300.0 / - mvPosition.z );
+				gl_Position = projectionMatrix * mvPosition;
+			}
+		</script>
+
+    	<script type="x-shader/x-fragment" id="fragmentshader">
+        	uniform vec3 color;
+			void main() {
+				if ( length( gl_PointCoord - vec2( 0.5, 0.5 ) ) > 0.475 ) discard;
+				gl_FragColor = vec4( color, 1.0 );
+			}
+		</script>
+
+		<script type="module">
+  			import * as THREE from 'https://cdn.skypack.dev/three@0.134.0';
+			import { FontLoader } from 'https://cdn.skypack.dev/three@0.134.0/examples/jsm/loaders/FontLoader.js';
+			import { TextGeometry } from 'https://cdn.skypack.dev/three@0.134.0/examples/jsm/geometries/TextGeometry.js';
+			var mouseX = 0, mouseY = 0;
+		    var camera, scene, renderer;
+		    var windowHalfX = window.innerWidth / 2 ;
+			var windowHalfY = window.innerHeight / 2;
+			init();
+            animate();
+
+			function init() {
+				renderer = new THREE.WebGLRenderer();
+				renderer.setSize( window.innerWidth, window.innerHeight );
+				document.body.appendChild( renderer.domElement );
+
+				camera = new THREE.PerspectiveCamera( 75, window.innerWidth / window.innerHeight, 0.1, 1000 );
+
+				scene = new THREE.Scene();
+
+				var material = new THREE.ShaderMaterial( {
+					uniforms: {
+						color: { value: new THREE.Color( 0xffffff ) },
+					},
+					vertexShader: document.getElementById( 'vertexshader' ).textContent,
+					fragmentShader: document.getElementById( 'fragmentshader' ).textContent
+				} );
+				const points = [];
+				for (var x = -10; x <= 10 ; x = x + .025) {
+					for (var y = -10; y <= 10; y = y + .025) {
+						var denom = (1 + x**2 + y**2);
+						var project_x = 2*x / denom;
+						var project_y = 2*y / denom;
+						var project_z = (y**2 + x**2 - 1) / denom;
+						points.push( new THREE.Vector3( project_x, project_y, project_z) );
+					}
+				}
+
+				const geometry = new THREE.BufferGeometry().setFromPoints( points );
+
+				const particles = new THREE.Points( geometry, material );
+
+				const axis_material = new THREE.LineBasicMaterial( { color: 0xff0000 } );
+				const x_axis_points = [];
+				x_axis_points.push( new THREE.Vector3( - 10, 0, 0 ) );
+				x_axis_points.push( new THREE.Vector3( 0, 0, 0 ) );
+				x_axis_points.push( new THREE.Vector3( 10, 0, 0 ) );
+				const x_axis_geometry = new THREE.BufferGeometry().setFromPoints( x_axis_points );
+				const y_axis_points = [];
+				y_axis_points.push( new THREE.Vector3( 0, -10, 0 ) );
+				y_axis_points.push( new THREE.Vector3( 0, 0, 0 ) );
+				y_axis_points.push( new THREE.Vector3( 0, 10, 0 ) );
+				const y_axis_geometry = new THREE.BufferGeometry().setFromPoints( y_axis_points );
+				const z_axis_points = [];
+				z_axis_points.push( new THREE.Vector3( 0, 0, -10 ) );
+				z_axis_points.push( new THREE.Vector3( 0, 0, 0 ) );
+				z_axis_points.push( new THREE.Vector3( 0, 0, 10 ) );
+				const z_axis_geometry = new THREE.BufferGeometry().setFromPoints( z_axis_points );
+				const x_axis = new THREE.Line( x_axis_geometry, axis_material );
+				const y_axis = new THREE.Line( y_axis_geometry, axis_material );
+				const z_axis = new THREE.Line( z_axis_geometry, axis_material );			    
+
+				scene.add( particles );
+				scene.add( x_axis );
+				scene.add( y_axis );
+				scene.add( z_axis );
+				camera.position.x = 0;
+				camera.position.y = 5;
+				camera.position.z = 0;
+				camera.lookAt( 0, 0, 0 );
+	       
+				renderer.render( scene, camera );
+				document.addEventListener( 'mousemove', onDocumentMouseMove, false );
+			}
+
+			function render() {
+			    var denom = (1 + mouseX**2 + mouseY**2);
+				var project_x = 2*mouseX / denom;
+				var project_y = 2*mouseY / denom;
+				var project_z = (mouseY**2 + mouseX**2 - 1) / denom;
+				console.log("Mouse: [%o, %o] -> Project [%o, %o, %o]", mouseX, mouseY, project_x, project_y, project_z);
+				const mouse_material = new THREE.LineBasicMaterial( { color: 0x0000ff } );
+				mouse_material.setSize
+				const mouse_points = [];
+				mouse_points.push( new THREE.Vector3( 0, 0, 10 ) );
+				mouse_points.push( new THREE.Vector3( project_x, project_y, project_z ) );
+				const mouse_geometry = new THREE.BufferGeometry().setFromPoints( mouse_points );
+				const mouse_projection = new THREE.Line( mouse_geometry, mouse_material );
+				// scene.add( mouse_projection );
+			    camera.lookAt( mouse_points[1] );
+				
+                // Add mouse text
+                const loader = new FontLoader();
+				const text_materials = [
+					new THREE.MeshPhongMaterial( { color: 0xffffff, flatShading: true } ), // front
+					new THREE.MeshPhongMaterial( { color: 0xffffff } ) // side
+				];
+
+				loader.load( 'fonts/helvetiker_regular.typeface.json', function ( font ) {
+
+					const geometry = new TextGeometry( 'Hello three.js!', {
+						font: font,
+						size: 80,
+						height: 5,
+						curveSegments: 12,
+						bevelEnabled: true,
+						bevelThickness: 10,
+						bevelSize: 8,
+						bevelOffset: 0,
+						bevelSegments: 5
+					} );
+                    console.log("I think we loaded?")
+					textMesh = new THREE.Mesh(geometry, text_materials);
+					textMesh.position.x = 0;
+					textMesh.position.y = 0;
+					textMesh.position.z = 2;
+					scene.add( textMesh );
+				} );
+
+				renderer.render( scene, camera );
+
+			}
+
+			function onDocumentMouseMove( event ) {
+				console.log("Event [%o, %o]", event.clientX, event.clientY);
+				mouseX = (event.clientX - windowHalfX ) / (window.innerWidth / 10);
+				mouseY = (event.clientY - windowHalfY) / (window.innerHeight / 10);
+			}
+			function animate() {
+				requestAnimationFrame( animate );
+				render();
+			}	
+		</script>
+	</body>
+</html>
