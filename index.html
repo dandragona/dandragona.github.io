@@ -75,7 +75,7 @@ import { OrbitControls } from 'https://cdn.skypack.dev/three@0.134.0/examples/js
 				particles.rotateX( -Math.PI / 2 );
 
 				// Create axises?.
-				const axis_material = new THREE.LineBasicMaterial( { color: 0xff0000 } );
+				const axis_material = new THREE.LineBasicMaterial( { color: 0xFC404E } );
 				const x_axis_points = [];
 				x_axis_points.push( new THREE.Vector3( - 10, 0, 0 ) );
 				x_axis_points.push( new THREE.Vector3( 0, 0, 0 ) );
@@ -106,7 +106,7 @@ import { OrbitControls } from 'https://cdn.skypack.dev/three@0.134.0/examples/js
 				
 				// Create the scene.
 				scene = new THREE.Scene();
-				scene.background = new THREE.Color( 0xf0f0f0 );
+				scene.background = new THREE.Color( 0xDBECEF );
 				scene.add( grid );
 				// scene.add( plane );
 				scene.add( particles );
@@ -132,7 +132,7 @@ import { OrbitControls } from 'https://cdn.skypack.dev/three@0.134.0/examples/js
 
 				var div = document.getElementById('target_div');
 				div.innerHTML = `Mouse: [${mouseX.toFixed(2)}, ${mouseY.toFixed(2)}] -> Project [${project_x.toFixed(2)}, ${project_y.toFixed(2)}, ${project_z.toFixed(2)}]`;
-				const mouse_material = new THREE.LineBasicMaterial( { color: 0x0000ff } );
+				const mouse_material = new THREE.LineBasicMaterial( { color: 0x000000 } );
 				const mouse_points = [];
 				mouse_points.push( new THREE.Vector3( 0, 0, 1 ) );
 				mouse_points.push( new THREE.Vector3( project_x, project_y, project_z ) );
