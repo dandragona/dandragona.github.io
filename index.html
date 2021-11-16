@@ -134,6 +134,8 @@ import { OrbitControls } from 'https://cdn.skypack.dev/three@0.134.0/examples/js
 				const mouse_points = [];
 				mouse_points.push( new THREE.Vector3( 0, 0, 1 ) );
 				mouse_points.push( new THREE.Vector3( project_x, project_y, project_z ) );
+                // Maybe we should project the point on the plane.
+				// mouse_points.push( new THREE.Vector3( mouseX, mouseY, 0 ) );
 				const mouse_geometry = new THREE.BufferGeometry().setFromPoints( mouse_points );
 				mouse_projection = new THREE.Line( mouse_geometry, mouse_material );
 				mouse_projection.rotateX( - Math.PI / 2)
