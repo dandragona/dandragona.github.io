@@ -41,13 +41,13 @@ import { OrbitControls } from 'https://cdn.skypack.dev/three@0.134.0/examples/js
             animate();
 
 			function init() {
-				renderer = new THREE.WebGLRenderer();
+				renderer = new THREE.WebGLRenderer( { antialias: true } );
 				renderer.setSize( window.innerWidth, window.innerHeight );
 				document.body.appendChild( renderer.domElement );
 
-				camera = new THREE.PerspectiveCamera( 45, window.innerWidth / window.innerHeight, 0.1, 1000 );
+				camera = new THREE.PerspectiveCamera( 60, window.innerWidth / window.innerHeight, 1, 1000 );
 				controls = new OrbitControls( camera, renderer.domElement );
-				camera.position.set( 2.5,2.5,0.5 );
+				camera.position.set( 0,2,3 );
 				controls.update();
 				controls.addEventListener( 'change', render );
 				controls.autoRotate = true;
@@ -72,6 +72,7 @@ import { OrbitControls } from 'https://cdn.skypack.dev/three@0.134.0/examples/js
 				}
 				const geometry = new THREE.BufferGeometry().setFromPoints( points );
 				const particles = new THREE.Points( geometry, material );
+				particles.rotateX( -Math.PI / 2 );
 
 				// Create axises?.
 				const axis_material = new THREE.LineBasicMaterial( { color: 0xff0000 } );
@@ -98,16 +99,16 @@ import { OrbitControls } from 'https://cdn.skypack.dev/three@0.134.0/examples/js
 				const grid = new THREE.GridHelper( 10, 100 );
 				grid.material.opacity = 0.25;
 				grid.material.transparent = true;
-				grid.rotateX( Math.PI / 2 );
-				const plane_geometry = new THREE.PlaneGeometry( 10, 100 );
-				plane_geometry.rotateZ( Math.PI / 2 );
-				const plane = new THREE.Mesh( plane_geometry, new THREE.MeshBasicMaterial( { visible: false } ) );
+				//grid.rotateX( Math.PI / 2 );
+				// const plane_geometry = new THREE.PlaneGeometry( 10, 100 );
+				// plane_geometry.rotateZ( Math.PI / 2 );
+				// const plane = new THREE.Mesh( plane_geometry, new THREE.MeshBasicMaterial( { visible: false } ) );
 				
 				// Create the scene.
 				scene = new THREE.Scene();
 				scene.background = new THREE.Color( 0xf0f0f0 );
 				scene.add( grid );
-				scene.add( plane );
+				// scene.add( plane );
 				scene.add( particles );
 				scene.add( x_axis );
 				scene.add( y_axis );
@@ -135,6 +136,7 @@ import { OrbitControls } from 'https://cdn.skypack.dev/three@0.134.0/examples/js
 				mouse_points.push( new THREE.Vector3( project_x, project_y, project_z ) );
 				const mouse_geometry = new THREE.BufferGeometry().setFromPoints( mouse_points );
 				mouse_projection = new THREE.Line( mouse_geometry, mouse_material );
+				mouse_projection.rotateX( - Math.PI / 2)
 				scene.add( mouse_projection );
 			    //camera.lookAt( mouse_points[1] );
 
