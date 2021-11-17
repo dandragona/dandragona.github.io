@@ -3,12 +3,31 @@
 	<head>
 		<link type="text/css" rel="stylesheet" href="./css/main.css">
 		<meta charset="utf-8">
-		<title>My first three.js app</title>
+		<meta name="viewport" content="width=device-width, initial-scale=1.0">
+		<title>Personal Website</title>
 		<style>
-			body { margin: 0; }
+			body{
+				background-color:#161616;
+			}
 		</style>
 	</head>
 	<body>
+		<section id="main">
+			<!--navigation-------------------------------->
+			<nav>
+			<!--logo--->
+			<a href="#" class="logo">LOGO</a>
+			<!--menu--------->
+			<div class="toggle"></div>
+			<ul class="menu">
+			<li class="active"><a href="#main" >Home</a></li>	
+			<li><a href="#about">About</a></li>	
+			<li><a href="#contact-form">Contact</a></li>	
+			</ul>
+			<!--language-->
+			<a href="#" class="lang">En</a>
+			</nav>
+		</section>
 		<div id="target_div" class="circle left-corner name-card"></div>
 		
 		<script type="x-shader/x-vertex" id="vertexshader">
@@ -29,7 +48,7 @@
 
 		<script type="module">
   			import * as THREE from 'https://cdn.skypack.dev/three@0.134.0';
-import { OrbitControls } from 'https://cdn.skypack.dev/three@0.134.0/examples/jsm/controls/OrbitControls.js';
+			import { OrbitControls } from 'https://cdn.skypack.dev/three@0.134.0/examples/jsm/controls/OrbitControls.js';
 			var mouseX = 0, mouseY = 0;
 		    var camera, controls,scene, renderer;
 		    var windowHalfX = window.innerWidth / 2 ;
@@ -44,6 +63,11 @@ import { OrbitControls } from 'https://cdn.skypack.dev/three@0.134.0/examples/js
 				renderer.setSize( window.innerWidth, window.innerHeight );
 				document.body.appendChild( renderer.domElement );
 
+				// Create the scene.
+				scene = new THREE.Scene();
+				scene.background = new THREE.Color( 0xF4F7FF );
+
+				// Create the orbiting camera.
 				camera = new THREE.PerspectiveCamera( 60, window.innerWidth / window.innerHeight, 1, 1000 );
 				controls = new OrbitControls( camera, renderer.domElement );
 				camera.position.set( 0,2,3 );
@@ -73,8 +97,10 @@ import { OrbitControls } from 'https://cdn.skypack.dev/three@0.134.0/examples/js
 				const geometry = new THREE.BufferGeometry().setFromPoints( points );
 				const particles = new THREE.Points( geometry, material );
 				particles.rotateX( -Math.PI / 2 );
+				scene.add( particles );
 
-				// Create axises?.
+				// Create each axis.
+				// TODO: Label axis.
 				const axis_material = new THREE.LineBasicMaterial( { color: 0xFC404E } );
 				const x_axis_points = [];
 				x_axis_points.push( new THREE.Vector3( - 10, 0, 0 ) );
@@ -94,56 +120,48 @@ import { OrbitControls } from 'https://cdn.skypack.dev/three@0.134.0/examples/js
 				const x_axis = new THREE.Line( x_axis_geometry, axis_material );
 				const y_axis = new THREE.Line( y_axis_geometry, axis_material );
 				const z_axis = new THREE.Line( z_axis_geometry, axis_material );			    
-
-				// Create the plane
-				const grid = new THREE.GridHelper( 10, 100 );
-				grid.material.opacity = 0.25;
-				grid.material.transparent = true;
-				//grid.rotateX( Math.PI / 2 );
-				// const plane_geometry = new THREE.PlaneGeometry( 10, 100 );
-				// plane_geometry.rotateZ( Math.PI / 2 );
-				// const plane = new THREE.Mesh( plane_geometry, new THREE.MeshBasicMaterial( { visible: false } ) );
-				
-				// Create the scene.
-				scene = new THREE.Scene();
-				scene.background = new THREE.Color( 0xDBECEF );
-				scene.add( grid );
-				// scene.add( plane );
-				scene.add( particles );
 				scene.add( x_axis );
 				scene.add( y_axis );
 				scene.add( z_axis );
 
+				// Create the grid.
+				const grid = new THREE.GridHelper( 10, 100 );
+				grid.material.opacity = 0.25;
+				grid.material.transparent = true;
+				scene.add( grid );
+
 				// Render the scene.
 				renderer.render( scene, camera );
+				// Add listeners.
 				document.addEventListener( 'mousemove', onDocumentMouseMove, false );
 				window.addEventListener( 'resize', onWindowResize, false );
 
 			}
 
 			function render() {
+				// Remove previous projections.
 				if (mouse_projection) {
 					scene.remove( mouse_projection );
 				}
+
+				// Calculate projection using the new mouse coordinates.
 			    var denom = (1 + mouseX**2 + mouseY**2);
 				var project_x = 2*mouseX / denom;
 				var project_y = 2*mouseY / denom;
 				var project_z = (mouseY**2 + mouseX**2 - 1) / denom;
-
+				// Print the mouse coordinates to the info circle.
 				var div = document.getElementById('target_div');
 				div.innerHTML = `Mouse: [${mouseX.toFixed(2)}, ${mouseY.toFixed(2)}] -> Project [${project_x.toFixed(2)}, ${project_y.toFixed(2)}, ${project_z.toFixed(2)}]`;
 				const mouse_material = new THREE.LineBasicMaterial( { color: 0x000000 } );
 				const mouse_points = [];
 				mouse_points.push( new THREE.Vector3( 0, 0, 1 ) );
 				mouse_points.push( new THREE.Vector3( project_x, project_y, project_z ) );
-                // Maybe we should project the point on the plane.
-				// mouse_points.push( new THREE.Vector3( mouseX, mouseY, 0 ) );
 				const mouse_geometry = new THREE.BufferGeometry().setFromPoints( mouse_points );
 				mouse_projection = new THREE.Line( mouse_geometry, mouse_material );
-				mouse_projection.rotateX( - Math.PI / 2)
+				mouse_projection.rotateX( - Math.PI / 2);
 				scene.add( mouse_projection );
-			    //camera.lookAt( mouse_points[1] );
 
+				// Render the new scene.
 				renderer.render( scene, camera );
 
 			}
@@ -155,10 +173,10 @@ import { OrbitControls } from 'https://cdn.skypack.dev/three@0.134.0/examples/js
 			}
 
 			function onDocumentMouseMove( event ) {
-				console.log("Event [%o, %o]", event.clientX, event.clientY);
 				mouseX = (event.clientX - windowHalfX ) / (window.innerWidth / 10);
 				mouseY = (event.clientY - windowHalfY) / (window.innerHeight / 10);
 			}
+			
 			function animate() {
 				requestAnimationFrame( animate );
 				controls.update();

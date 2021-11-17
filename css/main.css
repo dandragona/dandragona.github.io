@@ -45,3 +45,62 @@
   align-items: center; 
   justify-content: center;
 }
+
+body{
+    margin:0px;
+    padding:0px;
+    background-color:#161616;   
+}
+ul{
+    list-style:none;
+}
+a{
+    text-decoration:none;
+}
+nav{
+    display:flex;
+    justify-content: space-between;
+    align-items: center;
+    text-transform: uppercase;
+    font-weight: 600;
+    letter-spacing: 2px;
+    font-family: calibri;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width:100%;
+    box-sizing: border-box;
+    padding: 10px 50px;
+    background-color:#F4F7FF;
+    box-shadow:2px 2px 12px rgba(0,0,0,0.05); 
+    z-index: 1;
+}
+ 
+.menu{
+    display: flex;
+}
+.menu li a{
+    padding: 10px 15px;
+    color:#6c707c;
+    font-size: 12px;
+    
+}
+.lang{
+    color:#292929;
+}
+.logo{
+    font-size: 25px;
+    font-weight: bold;
+    color:#292929;
+    font-family:Poppins;
+}
+.toggle{
+    display: none;
+}
+.active a,
+.menu li a:hover{
+    background-color:#292929;
+    color:#FFF!important;
+    font-weight: bold;
+    transition: all ease 0.4s;
+}
