@@ -12,7 +12,7 @@
 		<div id="target_div" class="circle left-corner name-card"></div>
 		
 		<script type="x-shader/x-vertex" id="vertexshader">
-       		attribute float scale;
+       		uniform float scale;
 			void main() {
 				vec4 mvPosition = modelViewMatrix * vec4( position, 1.0 );
 				gl_PointSize = scale * ( 300.0 / - mvPosition.z );
@@ -55,6 +55,7 @@ import { OrbitControls } from 'https://cdn.skypack.dev/three@0.134.0/examples/js
 				var material = new THREE.ShaderMaterial( {
 					uniforms: {
 						color: { value: new THREE.Color( 0x7743F8 ) },
+						scale: { value: 0.005 },
 					},
 					vertexShader: document.getElementById( 'vertexshader' ).textContent,
 					fragmentShader: document.getElementById( 'fragmentshader' ).textContent
