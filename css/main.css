@@ -11,10 +11,9 @@
 
 .left-corner {
     position: fixed;
-    top: 20%;
-    left: 25%;
-    /* bring your own prefixes */
-     transform: translate(-80%, -80%); 
+    top: 97%;
+    left: 50%;
+    transform: translate(-50%, -97%);
 }
 
 .name-card {
@@ -26,24 +25,17 @@
     border-radius: 25px;
     /* padding: 20px; */
     padding: 0px;
-    top: 40%;
-}
-
-.name-card h1 {
-    margin: 30px 30px 0px 30px;
-    color: #000;
 }
 
 .circle {
   background: #17d1ac;
   border: 0.1875em solid #0F1C3F;
   box-shadow: 0.375em 0.375em 0 0 rgba(15, 28, 63, 0.125);
-  width: 200px; 
-  height: 200px;
-  border-radius: 50%;
+  height: 100px;
   display: flex; /* or inline-flex */
   align-items: center; 
   justify-content: center;
+  border-radius: 25px;
 }
 
 body{
