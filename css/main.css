@@ -9,7 +9,7 @@
     /* TODO Solve this in HTML */
 }
 
-.left-corner {
+.bottom-center {
     position: fixed;
     top: 97%;
     left: 50%;
@@ -111,8 +111,8 @@ nav{
 }
 .name{
     font-family: calibri;
-    width: 500px;
-    position: absolute;
+    position: fixed;
+    max-width: 600px;
     left: 20%;
     top: 50%;
     transform: translate(-20%,-50%);
