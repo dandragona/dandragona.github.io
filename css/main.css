@@ -37,6 +37,9 @@
   justify-content: center;
   border-radius: 25px;
 }
+#text {
+    padding: 10px;
+}
 
 body{
     margin:0px;

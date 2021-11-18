@@ -18,7 +18,8 @@
 			</ul>
 			</nav>
 		</section>
-		<div id="target_div" class="circle bottom-center"></div>
+		<div id="target_div" class="circle bottom-center">
+		</div>
 		
 		<script type="x-shader/x-vertex" id="vertexshader">
        		uniform float scale;
@@ -141,7 +142,7 @@
 				var project_z = (mouseY**2 + mouseX**2 - 1) / denom;
 				// Print the mouse coordinates to the info circle.
 				var div = document.getElementById('target_div');
-				div.innerHTML = `Mouse: [${mouseX.toFixed(2)}, ${mouseY.toFixed(2)}] -> Project [${project_x.toFixed(2)}, ${project_y.toFixed(2)}, ${project_z.toFixed(2)}]`;
+				div.innerHTML = `<p id="text">Mouse: [${mouseX.toFixed(2)}, ${mouseY.toFixed(2)}] -> Project [${project_x.toFixed(2)}, ${project_y.toFixed(2)}, ${project_z.toFixed(2)}]</p>`;
 				const mouse_material = new THREE.LineBasicMaterial( { color: 0x000000 } );
 				const mouse_points = [];
 				mouse_points.push( new THREE.Vector3( 0, 0, 1 ) );
