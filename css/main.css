@@ -16,6 +16,13 @@
     transform: translate(-50%, -97%);
 }
 
+.front-center {
+    position: absolute;
+    z-index: 1;
+    height: 50px;
+    width: 50px;
+}
+
 .name-card {
     text-align: center;
     background-color: white;
@@ -53,18 +60,7 @@ ul{
 a{
     text-decoration:none;
 }
-/*#main{
-    padding:30px 50px;
-    position:relative;
-    width:100%;
-    height: 100vh;
-    box-sizing: border-box;
-    background-size: 1330px;
-    background-position: right bottom;
-    background-repeat: no-repeat;
-    background-image: url("./images/benji.png");
-    background-color: #edf1fd;
-}*/
+
 nav{
     display:flex;
     justify-content: space-between;
@@ -231,4 +227,66 @@ nav{
 .about-text button:hover{
     background-color: #FFFFFF;
     transition: all ease 0.3s;
+}
+
+#portfolio{
+    width:100%;
+    box-sizing: border-box;
+    font-family: calibri;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 60px 2% 20px 2%;
+}
+ 
+.p-heading{
+    font-family: calibri;
+    font-size: 1.7rem;
+    text-align: center;
+    color:#FFFFFF;
+    font-weight: 400;
+    padding: 10px 20px;
+    background-color: #292929;
+    letter-spacing: 2px;
+    border-radius: 3px;
+    box-shadow: 2px 2px 20px rgba(0,0,0,0.1);
+}
+
+.p-box{
+    background-color: #1F1F1F;
+    overflow: hidden;
+    border-radius: 10px;
+    box-shadow: 2px 2px 13px rgba(0,0,0,0.3);
+    position: relative;
+    transition:transform 0.25s ease;
+}
+
+.p-box img{
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    transition:transform 0.25s ease;
+}
+
+.p-container{
+    width: 90%;
+    height:70vh;
+    display:grid;
+    grid-template-columns:1fr 1fr 1fr;
+    grid-template-rows: auto auto;
+    grid-gap: 10px;
+}
+
+.p-box:hover {
+    transform: scale(1.5);
+    overflow: none;
+    z-index: 3000;
+}
+
+#projection {
+    position: absolute;
+    text-align: center;
+    z-index: 100;
+    display:block;
 }

@@ -14,11 +14,14 @@
 			<ul class="menu">
 			<li class="active"><a href="#main" >Home</a></li>	
 			<li><a href="about.html">About</a></li>	
-			<li><a href="contact.html">Contact</a></li>	
+			<li><a href="benji.html">Benji</a></li>	
+			<li><a href="contact.html">Contact</a></li>
 			</ul>
 			</nav>
 		</section>
 		<div id="target_div" class="circle bottom-center">
+		</div>
+		<div id="projection" class="front-center">
 		</div>
 		
 		<script type="x-shader/x-vertex" id="vertexshader">
@@ -40,27 +43,36 @@
 		<script type="module">
   			import * as THREE from 'https://cdn.skypack.dev/three@0.134.0';
 			import { OrbitControls } from 'https://cdn.skypack.dev/three@0.134.0/examples/jsm/controls/OrbitControls.js';
+			import { CSS3DRenderer, CSS3DObject } from 'https://cdn.skypack.dev/three@0.134.0/examples/jsm/renderers/CSS3DRenderer.js';
 			var mouseX = 0, mouseY = 0;
-		    var camera, controls,scene, renderer;
+		    var camera, controls, gl_scene, css_scene, gl_renderer, css_renderer;
 		    var windowHalfX = window.innerWidth / 2 ;
 			var windowHalfY = window.innerHeight / 2;
 			var mouse_projection;
+			var label;
 
 			init();
             animate();
 
 			function init() {
-				renderer = new THREE.WebGLRenderer( { antialias: true } );
-				renderer.setSize( window.innerWidth, window.innerHeight );
-				document.body.appendChild( renderer.domElement );
+				gl_renderer = new THREE.WebGLRenderer( { antialias: true } );
+				gl_renderer.setSize( window.innerWidth, window.innerHeight );
+				// renderer.domElement.style.position = 'absolute';
+				// renderer.domElement.style.zIndex = 1;
+				// renderer.domElement.style.top = 0;
+				css_renderer = new CSS3DRenderer();
+				css_renderer.setSize( window.innerWidth, window.innerHeight );
+				document.body.appendChild( gl_renderer.domElement );
+				gl_renderer.domElement.appendChild( css_renderer.domElement );
 
 				// Create the scene.
-				scene = new THREE.Scene();
-				scene.background = new THREE.Color( 0xF4F7FF );
+				gl_scene = new THREE.Scene();
+				gl_scene.background = new THREE.Color( 0xF4F7FF );
+				css_scene = new THREE.Scene();
 
 				// Create the orbiting camera.
 				camera = new THREE.PerspectiveCamera( 60, window.innerWidth / window.innerHeight, 1, 1000 );
-				controls = new OrbitControls( camera, renderer.domElement );
+				controls = new OrbitControls( camera, gl_renderer.domElement );
 				camera.position.set( 0,2,3 );
 				controls.update();
 				controls.addEventListener( 'change', render );
@@ -88,7 +100,7 @@
 				const geometry = new THREE.BufferGeometry().setFromPoints( points );
 				const particles = new THREE.Points( geometry, material );
 				particles.rotateX( -Math.PI / 2 );
-				scene.add( particles );
+				gl_scene.add( particles );
 
 				// Create each axis.
 				// TODO: Label axis.
@@ -111,18 +123,19 @@
 				const x_axis = new THREE.Line( x_axis_geometry, axis_material );
 				const y_axis = new THREE.Line( y_axis_geometry, axis_material );
 				const z_axis = new THREE.Line( z_axis_geometry, axis_material );			    
-				scene.add( x_axis );
-				scene.add( y_axis );
-				scene.add( z_axis );
+				gl_scene.add( x_axis );
+				gl_scene.add( y_axis );
+				gl_scene.add( z_axis );
 
 				// Create the grid.
 				const grid = new THREE.GridHelper( 10, 100 );
 				grid.material.opacity = 0.25;
 				grid.material.transparent = true;
-				scene.add( grid );
+				gl_scene.add( grid );
 
-				// Render the scene.
-				renderer.render( scene, camera );
+				// Render the scenes.
+				gl_renderer.render( gl_scene, camera );
+				css_renderer.render( css_scene, camera );
 				// Add listeners.
 				document.addEventListener( 'mousemove', onDocumentMouseMove, false );
 				window.addEventListener( 'resize', onWindowResize, false );
@@ -132,7 +145,10 @@
 			function render() {
 				// Remove previous projections.
 				if (mouse_projection) {
-					scene.remove( mouse_projection );
+					gl_scene.remove( mouse_projection );
+				}
+				if (label) {
+					css_scene.remove( label );
 				}
 
 				// Calculate projection using the new mouse coordinates.
@@ -142,7 +158,16 @@
 				var project_z = (mouseY**2 + mouseX**2 - 1) / denom;
 				// Print the mouse coordinates to the info circle.
 				var div = document.getElementById('target_div');
-				div.innerHTML = `<p id="text">Mouse: [${mouseX.toFixed(2)}, ${mouseY.toFixed(2)}] -> Project [${project_x.toFixed(2)}, ${project_y.toFixed(2)}, ${project_z.toFixed(2)}]</p>`;
+				div.innerHTML = `<p id="text">Mouse: [${mouseX.toFixed(2)}, ${mouseY.toFixed(2)}] -> Projection [${project_x.toFixed(2)}, ${project_y.toFixed(2)}, ${project_z.toFixed(2)}]</p>`;
+				var div = document.getElementById('projection');
+				div.innerHTML = `(${mouseX.toFixed(2)},${mouseY.toFixed(2)})`;
+				var label = new CSS3DObject( div );
+				label.position.x = mouseX;
+				label.position.y = mouseY;
+				label.position.z = 0;
+				console.log(label.position.x);
+				css_scene.add( label );
+
 				const mouse_material = new THREE.LineBasicMaterial( { color: 0x000000 } );
 				const mouse_points = [];
 				mouse_points.push( new THREE.Vector3( 0, 0, 1 ) );
@@ -150,17 +175,18 @@
 				const mouse_geometry = new THREE.BufferGeometry().setFromPoints( mouse_points );
 				mouse_projection = new THREE.Line( mouse_geometry, mouse_material );
 				mouse_projection.rotateX( - Math.PI / 2);
-				scene.add( mouse_projection );
+				gl_scene.add( mouse_projection );
 
 				// Render the new scene.
-				renderer.render( scene, camera );
-
+				gl_renderer.render( gl_scene, camera );
+				css_renderer.render( css_scene, camera );
 			}
 
 			function onWindowResize() {
 				camera.aspect = window.innerWidth / window.innerHeight;
 				camera.updateProjectionMatrix();
-				renderer.setSize( window.innerWidth, window.innerHeight );
+				gl_renderer.setSize( window.innerWidth, window.innerHeight );
+				css_renderer.setSize( window.innerWidth, window.innerHeight )
 			}
 
 			function onDocumentMouseMove( event ) {
