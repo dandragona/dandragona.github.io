@@ -1,0 +1,187 @@
+---
+layout: ../../layouts/BlogPostLayout.astro
+title: "Optimal Bet Sizing is Calculus"
+pubDate: 2025-10-08
+description: "A deep dive into the Kelly Criterion, from its derivation to its application in portfolio management."
+---
+
+import GrowthRateVisualizer from '../../components/GrowthRateVisualizer.jsx';
+
+The Kelly Criterion is a formula used to determine the optimal size of a series of bets to maximize the long-term growth rate of a portfolio. It was developed by John L. Kelly Jr., a scientist at Bell Labs, in 1956. The formula is a powerful tool for managing risk and maximizing returns in any situation where you have an edge.
+
+# The Coin Toss Game
+
+Let's consider a simple game: a biased coin toss. Suppose the coin has a probability $p$ of landing on heads, and you win $b$ dollars for every dollar you bet.
+If it lands on tails (with probability $q = 1-p$), you lose your bet.
+You start with an initial portfolio of $D_0$ dollars.
+You decide to bet a fraction $f$ of your  on each toss.
+
+After one toss, your new portfolio $D_1$ will be:
+
+- $D_1 = D_0(1 + bf)$ if you win (with probability $p$)
+- $D_1 = D_0(1 - f)$ if you lose (with probability $q$)
+
+After $N$ tosses, with $W$ wins and $L$ losses ($N = W + L$), your portfolio $D_N$ will be:
+
+$$ D_N = D_0 (1+bf)^W (1-f)^L $$
+
+## Geometric Mean
+
+Our goal is to find the fraction $f$ that maximizes the growth rate of our portfolio.
+To define the growth-rate of the portfolio we first note that we must use the **geometric mean** rather than the arithmetic mean.
+This is because for each bet we compound our portfolio multiplicatively (the amount bet increases/decreases with portfolio size rather than being a fixed amount).
+For example suppose we started with $D_0$ = $100 and gained 50% on the first bet and lost 50% on the next. Then:
+  * The first growth rate is 1.5x, leaving us at $D_1$ = $150.
+  * The second growth rate is 0.5x, leaving us at $D_2$ = $75.
+
+Arithmetically averaging the *growth rates* would yield a growth rate of 1.0x yet we ended up at $75.
+
+The geometric mean on the otherhand is defined as:
+
+$$\left(\frac{D_N}{D_0}\right)^{\frac{1}{N}} = \sqrt{\frac{75}{100}} \approx 0.866$$ which is the average multiplicative factor we needed to apply $N=2$ times to get us to our final state of $75.
+
+Moving back to the task at hand, we look at the geometric mean of the portfolio growth.
+
+## Using the Logarithm
+
+We begin our analysis of the portfolio growth by doing a convenient calculus trick of taking the logarithm of this geometric mean.
+This trick will assist during the optimization step:
+
+$$ G(f) = \log\left(\left(\frac{D_N}{D_0}\right)^{\frac{1}{N}}\right) = \frac{1}{N} \log\left(\frac{D_N}{D_0}\right) = \frac{W}{N} \log(1+bf) + \frac{L}{N} \log(1-f) $$
+
+Since all of these values are positive (you didn't take a loan or risk more than your portfolio right?)
+the logarithm is a strictly increasing continuous function, and so maximizing this value $G$ will occur at the same point as the function inside the log (the geometric mean of the portfolio growth).
+
+Here is a visualization of this concept. Notice that while the shape of the transformed function changes, the x-coordinate of the maximum remains the same.
+
+import MonotonicFunctionVisualizer from '../../components/MonotonicFunctionVisualizer.jsx';
+
+<MonotonicFunctionVisualizer client:load />
+
+The proof is rather simple, the inner function has a maximum say at $x_{max}$,
+then every $x$-value nearby is maps to less than $f(x_{max})$, but $f(x_{max})$ is the *input* to the
+increasing function, and so this is just choosing an input value to the *left* of $f(x_{max})$. The
+function is increasing and so this new input must be lower than what $f(x_{max})$ is sent to. 
+
+## Deriving the Kelly Criterion
+
+Now we want to derive the Kelly Criterion for bet sizing. Returning to $G(f)$ which is the log of
+the geometric average growth rate, we can simplify the formula by noting that part of our assumptions
+is that the long-term success rate, $p$, is known, so that as $N \to \infty$, we have $W/N \to p$ and $L/N \to q$. So, the long-term growth rate is:
+
+$$ G(f) = p \log(1+bf) + q \log(1-f) $$
+
+To find the optimal fraction $f$, we need to maximize $G(f)$. We can do this by taking the derivative of $G(f)$ with respect to $f$ and setting it to zero:
+
+$$ \frac{dG}{df} = \frac{pb}{1+bf} - \frac{q}{1-f} = 0 $$
+
+Solving for $f$, we get:
+
+$$ pb(1-f) = q(1+bf) $$
+
+$$ pb - pbf = q + qbf $$
+
+$$ pb - q = pbf + qbf $$
+
+The right side can be factored as $f(pb+qb) = fb(p+q)$. Since $p+q=1$, this is just $fb$.
+
+$$ pb - q = fb $$
+
+$$ f = \frac{pb-q}{b} $$
+
+This is the Kelly Criterion. It gives the optimal fraction of your portfolio to bet to maximize long-term growth.
+All you need to know is $p$ and $b$.
+
+## Portfolio Growth Rate
+
+Now that we have the optimal fraction $f^*$, let's analyze the growth it produces. It's important to distinguish between two related concepts.
+
+### Logarithmic Rate vs. Geometric Factor
+
+The value we have been working with is the **logarithmic growth rate**, $G(f)$:
+
+$$ G(f) = p \log(1+bf) + q \log(1-f) $$
+
+This is the *exponent* in the portfolio's long-term exponential growth curve, $D_N \approx D_0 e^{GN}$.
+
+The **geometric mean growth factor**, which was defined earlier, converges to a value that depends only on $f$ as $N$ gets large. Let's call this $K(f)$:
+
+$$ K(f) = \lim_{N\to\infty} \left(\frac{D_N}{D_0}\right)^{\frac{1}{N}} = (1+bf)^p (1-f)^q $$
+
+<details>
+<summary>Click to see the proof of this convergence.</summary>
+
+The proof relies on the Law of Large Numbers. Here is a step-by-step breakdown:
+
+1.  **Substitute the formula for $D_N$**: We know that $D_N = D_0 (1+bf)^W (1-f)^L$. Substituting this into the limit gives:
+    $$ \lim_{N\to\infty} \left(\frac{D_0 (1+bf)^W (1-f)^L}{D_0}\right)^{\frac{1}{N}} = \lim_{N\to\infty} \left( (1+bf)^W (1-f)^L \right)^{\frac{1}{N}} $$
+
+2.  **Simplify using exponent rules**: We distribute the `1/N` exponent:
+    $$ \lim_{N\to\infty} (1+bf)^{\frac{W}{N}} (1-f)^{\frac{L}{N}} $$
+
+3.  **Apply the Law of Large Numbers**: As the number of trials $N$ approaches infinity, the proportion of wins $\frac{W}{N}$ converges to the probability of winning $p$, and the proportion of losses $\frac{L}{N}$ converges to the probability of losing $q$.
+
+4.  **Substitute the limits**: Replacing the proportions with their probabilities gives us the final result:
+    $$ (1+bf)^p (1-f)^q $$
+
+</details>
+
+This $K(f)$ is the average *multiplier* your portfolio experiences on each bet.
+
+The logarithmic rate $G(f)$ and the growth factor $K(f)$ are directly related:
+$$ G(f) = \log(K(f)) \quad \text{and} \quad K(f) = e^{G(f)} $$
+
+**An Example:**
+Let's take a biased coin with $p=0.6$ and odds $b=2$. The optimal fraction is $f^* = (0.6 \cdot 2 - 0.4) / 2 = 0.4$.
+
+First, we find the logarithmic growth rate $G(0.4)$:
+
+$$ G(0.4) = 0.6 \log(1.8) + 0.4 \log(0.6) \approx 0.148 $$
+
+From this, we can find the average growth factor $K(0.4)$:
+
+$$ K(0.4) = e^{G(0.4)} = e^{0.148} \approx 1.16 $$
+
+This means that by betting 40% of your capital each time, your capital will be multiplied by an average of 1.16 on every bet, for a 16% average gain per bet.
+
+For the rest of this post, we will use the logarithmic growth rate $G(f)$, as is conventional.
+
+### Maximum Growth Rate
+
+So now we know the optimal fraction of our portfolio to bet each time, and we know what $G(f)$ and $K(f)$ represent.
+What remains is to find the maximum growth rate by plugging the Kelly fraction $f^* = \frac{pb-q}{b}$ back into the formula for $G(f)$ and then finding $K(f)$.
+
+$$ G(f^*) = p \log\left(1 + b\frac{pb-q}{b}\right) + q \log\left(1 - \frac{pb-q}{b}\right) $$
+
+This simplifies to the following.
+
+$$ G(f^*) = p\log(p) + q\log(q) + \log(b+1) - q\log(b) $$
+
+<details>
+<summary>Click to see the simplification steps</summary>
+
+$$ G(f^*) = p \log\left(1 + b\frac{pb-q}{b}\right) + q \log\left(1 - \frac{pb-q}{b}\right) $$
+
+$$ G(f^*) = p \log(1 + pb - q) + q \log\left(\frac{b - (pb-q)}{b}\right) $$
+
+$$ G(f^*) = p \log(p(b+1)) + q \log\left(\frac{b(1-p)+q}{b}\right) $$
+
+$$ G(f^*) = p \log(p(b+1)) + q \log\left(\frac{bq+q}{b}\right) = p \log(p(b+1)) + q \log\left(\frac{q(b+1)}{b}\right) $$
+
+$$ G(f^*) = p\log(p) + p\log(b+1) + q\log(q) + q\log(b+1) - q\log(b) $$
+
+$$ G(f^*) = p\log(p) + q\log(q) + \log(b+1) - q\log(b) $$
+
+</details>
+
+and ultimately $K(f^*)$ is just $e$ raised to this.
+
+This is the maximum achievable growth rate. It's a function of the probability of winning $p$ and the odds $b$.
+
+## Visualizing the Growth Rate
+
+To get a better feel for how the growth rate depends on the betting fraction, let's visualize it. We'll create an interactive plot where you can adjust the parameters $p$ and $b$ and see how the growth rate curve changes. The x-axis will be the fraction $f$ of the portfolio bet, and the y-axis will be the growth rate $G(f)$.
+
+This component will allow you to adjust the probability of winning ($p$) and the odds ($b$) with sliders and see the resulting growth rate curve. The optimal fraction to bet, the Kelly fraction, is also calculated and displayed.
+
+<GrowthRateVisualizer client:load />

@@ -1,0 +1,131 @@
+---
+import '../styles/global.css';
+
+export interface Props {
+	title: string;
+	hideNav?: boolean;
+	fullWidth?: boolean;
+}
+
+const { title, hideNav = false, fullWidth = false } = Astro.props;
+---
+
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="description" content="Astro description" />
+		<meta name="viewport" content="width=device-width" />
+		<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+		<meta name="generator" content={Astro.generator} />
+		<title>{title}</title>
+		<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css" integrity="sha384-5TcZemv2l/9On385z///+d7MSYlvIEw9FuZTIdZ14vJLqWphw7e7ZPuOiCHJcFCP" crossorigin="anonymous">
+		<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.js" integrity="sha384-cMkvdD8LoxVzGF/RPUKAcvmm49FQ0oxwDF3BGKtDXcEc+T1b2N+teh/OJfpU0jr6" crossorigin="anonymous"></script>
+		<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/contrib/auto-render.min.js" integrity="sha384-hCXGrW6PitJEwbkoStFjeJxv+fSOOQKOPbJxSfM6G5sWZjAyWhXiTIIAmQqnlLlh" crossorigin="anonymous" onload="renderMathInElement(document.body);"></script>
+	</head>
+	<body>
+		<div class="progress-container">
+			<div class="progress-bar" id="myBar"></div>
+		</div>
+		{!hideNav && (
+			<nav>
+				<a href="/" class:list={{ active: Astro.url.pathname === '/' }}>Home</a>
+				<a href="/blog" class:list={{ active: Astro.url.pathname === '/blog' || Astro.url.pathname.startsWith('/blog/') }}>Blog</a>
+				<a href="/links" class:list={{ active: Astro.url.pathname === '/links' }}>Links</a>
+			</nav>
+		)}
+		<div class:list={["container", { "full-width": fullWidth }]}>
+			<slot />
+		</div>
+		<script is:inline>
+			function updateProgressBar() {
+				const winScroll = document.body.scrollTop || document.documentElement.scrollTop;
+				const height = document.documentElement.scrollHeight - document.documentElement.clientHeight;
+				const scrolled = (winScroll / height) * 100;
+				document.getElementById("myBar").style.width = scrolled + "%";
+			}
+			window.addEventListener('scroll', updateProgressBar);
+		</script>
+	</body>
+<style>
+	@keyframes gradient-animation {
+		0% {
+			background-position: 0% 50%;
+		}
+		50% {
+			background-position: 100% 50%;
+		}
+		100% {
+			background-position: 0% 50%;
+		}
+	}
+
+	.container {
+		max-width: 800px;
+		margin: 0 auto;
+		padding: 40px;
+		color: white;
+	}
+
+	.container.full-width {
+		max-width: none;
+		padding: 0;
+		margin: 0;
+	}
+
+	nav {
+		position: absolute;
+		top: 40px;
+		left: 40px;
+		z-index: 1;
+	}
+
+	nav a {
+		color: white;
+		text-decoration: none;
+		margin-right: 30px;
+		position: relative;
+		font-size: 1.5em;
+	}
+
+	nav a::after {
+		content: '';
+		position: absolute;
+		width: 100%;
+		transform: scaleX(0);
+		height: 3px;
+		bottom: -6px;
+		left: 0;
+		background-image: linear-gradient(to right, #7456eb, #ec3636);
+		transform-origin: bottom right;
+		transition: transform 0.25s ease-out;
+	}
+
+	nav a:hover::after {
+		transform: scaleX(1);
+		transform-origin: bottom left;
+	}
+
+	nav a.active::after {
+		transform: scaleX(1);
+		transform-origin: bottom left;
+		background-size: 200% 200%;
+		animation: gradient-animation .75s linear infinite;
+	}
+
+	.progress-container {
+		position: fixed;
+		top: 0;
+		left: 0;
+		width: 100%;
+		height: 8px;
+		z-index: 100;
+	}
+
+	.progress-bar {
+		height: 8px;
+		background-image: linear-gradient(to right, #7456eb, #ec3636);
+		width: 0%;
+	}
+</style>
+</html>
