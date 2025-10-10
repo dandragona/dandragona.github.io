@@ -1,4 +1,4 @@
-import{a as tt,R as vs}from"./index.aN-q7ZY9.js";/*!
+import{r as tt,R as vs}from"./index.CQ95-tCy.js";/*!
  * @kurkle/color v0.3.4
  * https://github.com/kurkle/color#readme
  * (c) 2024 Jukka Kurkela
