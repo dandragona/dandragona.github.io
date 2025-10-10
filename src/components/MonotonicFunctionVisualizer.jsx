@@ -51,6 +51,7 @@ const MonotonicFunctionVisualizer = () => {
 
   const options = {
     responsive: true,
+    maintainAspectRatio: false,
     animation: false,
     plugins: {
       legend: {
@@ -102,7 +103,7 @@ const MonotonicFunctionVisualizer = () => {
   };
 
   return (
-    <div>
+    <div style={{ height: '400px' }}>
       <Line options={options} data={data} updateMode="none" />
     </div>
   );

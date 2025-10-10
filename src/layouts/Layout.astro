@@ -1,4 +1,4 @@
----
+--- 
 import '../styles/global.css';
 
 export interface Props {
@@ -126,6 +126,12 @@ const { title, hideNav = false, fullWidth = false } = Astro.props;
 		height: 8px;
 		background-image: linear-gradient(to right, #7456eb, #ec3636);
 		width: 0%;
+	}
+
+	@media (max-width: 768px) {
+		.container {
+			padding: 20px;
+		}
 	}
 </style>
 </html>

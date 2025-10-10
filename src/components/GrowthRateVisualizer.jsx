@@ -50,6 +50,7 @@ const GrowthRateVisualizer = () => {
 
   const options = {
     responsive: true,
+    maintainAspectRatio: false,
     animation: false,
     plugins: {
       legend: {
@@ -124,7 +125,7 @@ const GrowthRateVisualizer = () => {
         <p>Max Log Growth Rate (G): {g(kellyFraction) > -Infinity ? g(kellyFraction).toFixed(3) : 'N/A'}</p>
         <p>Max Growth Factor (K): {g(kellyFraction) > -Infinity ? Math.exp(g(kellyFraction)).toFixed(3) : 'N/A'}</p>
       </div>
-      <Line options={options} data={data} />
+      <div style={{ height: '400px' }}><Line options={options} data={data} /></div>
     </div>
   );
 };
