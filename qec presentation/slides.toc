@@ -1,0 +1,12 @@
+\babel@toc {english}{}\relax 
+\beamer@sectionintoc {1}{Introduction}{3}{0}{1}
+\beamer@sectionintoc {2}{Classical Error Correction}{12}{0}{2}
+\beamer@sectionintoc {3}{Linear Codes}{36}{0}{3}
+\beamer@sectionintoc {4}{Quantum Error Correction}{66}{0}{4}
+\beamer@sectionintoc {5}{The 3-Qubit Bit-Flip Code}{68}{0}{5}
+\beamer@sectionintoc {6}{The 3-Qubit Phase-Flip Code}{112}{0}{6}
+\beamer@sectionintoc {7}{The Shor Code}{120}{0}{7}
+\beamer@sectionintoc {8}{Correcting Any Quantum Error}{139}{0}{8}
+\beamer@sectionintoc {9}{The Stabilizer Formalism}{158}{0}{9}
+\beamer@sectionintoc {10}{The 5-Qubit Code}{171}{0}{10}
+\beamer@sectionintoc {11}{The Surface Code}{190}{0}{11}
