@@ -1,0 +1,154 @@
+---
+layout: ../../layouts/BlogPostLayout.astro
+title: "Parallelism by the Roofline"
+pubDate: 2026-05-10
+description: "One matmul, four strategies. A visual walk through data parallelism, FSDP, tensor parallelism, and hybrid FSDP — and the roofline that decides between them."
+---
+
+import ShardingStage from '../../components/parallelism/ShardingStage.jsx';
+import OverlapTimeline from '../../components/parallelism/OverlapTimeline.jsx';
+import TpStaircase from '../../components/parallelism/TpStaircase.jsx';
+import HybridStaircase from '../../components/parallelism/HybridStaircase.jsx';
+import DpBackward from '../../components/parallelism/DpBackward.jsx';
+import FsdpBackward from '../../components/parallelism/FsdpBackward.jsx';
+import TpBackward from '../../components/parallelism/TpBackward.jsx';
+import HybridBackward from '../../components/parallelism/HybridBackward.jsx';
+
+A training step is a fight over three budgets: memory per device, compute per device, and communication between devices. Every parallelism strategy is a different way of paying those budgets for the same arithmetic.
+
+To keep the strategies comparable, we will refuse to change the example. The whole post comes back to one linear layer:
+
+$$
+X[B, E] \; @ \; W[E, E] \rightarrow Y[B, E]
+$$
+
+The cost is roughly $2 B E^2$ floating point operations. In the diagrams below we use $B = 4$, $E = 2$, and shard across two TPUs (except hybrid, which needs a 2×2 mesh). That is the train we want to keep moving. The question every strategy answers in its own way:
+
+> What is split, what is replicated, what communication repairs the split, and can that communication be hidden under matmul compute?
+
+{/* ===========================================================
+     SECTION OUTLINE — drives the rest of the post.
+
+     1. The roofline (compute, HBM, network)        → RooflineExplorer
+     2. Data parallelism                            → ShardingStage strategy="dp"
+     3. FSDP (memory, then overlap)                 → ShardingStage strategy="fsdp" + FsdpTimeline + RaceGauge
+     4. Tensor parallelism (within-layer overlap)   → ShardingStage strategy="tp" + TpStaircase + EOverP knob
+     5. Hybrid FSDP (mesh, topology)                → ShardingStage strategy="hybrid" + HybridMesh
+     6. Backward, briefly
+     7. Unified picture + strategy comparison
+   =========================================================== */}
+
+# Data Parallelism
+
+Replicate the weights, split the batch. Each device sees a different slice of $X$'s rows, multiplies by the same $W$, and produces its slice of $Y$:
+
+<ShardingStage strategy="dp" client:visible />
+
+Across chips, every $W$ is identical; each chip owns a different chunk of the batch dimension. The forward pass is embarrassingly parallel. The repair step is at the end of the step: the gradients of the replicated $W$ must agree across devices, so an all-reduce (or equivalent reduce-scatter + all-gather) closes the loop.
+
+The win is throughput, not memory. Every device still stores the full model, the full gradient, and the full optimizer state.
+
+Where, then, is the compute-vs-comm overlap? The forward pass has none — every chip just multiplies locally. The overlap lives in the *backward* pass: as each layer's gradients become available, their all-reduce can run while earlier layers are still computing their backward.
+
+<OverlapTimeline strategy="dp" client:visible />
+
+# FSDP
+
+Stop replicating. The batch is still sharded as in DP, but now $W$ is sliced too — each chip stores only a strip of $W$'s rows. In the picture below, $Y$ starts empty: chip $i$ has its $X$ slice and its $W$ shard, but it cannot compute its $Y$ yet — the matmul $X_i @ W_i$ doesn't even compose. Press *All-gather W* to materialize the full $W$ on every chip; only then can each chip produce its batch slice of $Y$.
+
+<ShardingStage strategy="fsdp" client:visible />
+
+The mental model that makes this work: at any moment, only one or two layers are *materialized* (yellow in the picture above). The other 50 or 100 layers stay sharded. Memory shrinks by the shard count.
+
+The performance question is whether the gather for layer $N{+}1$ can finish while layer $N$ is still computing. Toggle the modes below to see the difference: in the overlapped schedule the compute stream is continuous; in the naive schedule each matmul waits for its all-gather to land, and the step takes roughly twice as long.
+
+<OverlapTimeline strategy="fsdp" client:visible />
+
+{/* TODO: <RaceGauge /> — small widget that scrubs the AG/matmul duration ratio */}
+
+# Tensor Parallelism
+
+A different shape. Tensor parallelism splits the matrix itself. The cleanest mental model is *row-parallel*: there is one shared $X$, but each chip holds a slice of its columns (along the contraction dimension $E$), paired with the matching rows of $W$. Each device then computes
+
+$$
+X_i \, [B, E/P] \; @ \; W_i \, [E/P, E] \rightarrow Y^{(i)} \, [B, E]
+$$
+
+Notice the shape: $Y^{(i)}$ is the *full* output, not a slice. But it is a **partial sum** — only the $i$-th of $P$ terms in the contraction. None of the chips alone has the correct answer. The picture below shows it: every chip's $Y$ block is colored across its entire shape (striped, to mark "partial"), because every chip has an opinion about every output element, and they all have to be added together.
+
+<ShardingStage strategy="tp" client:visible />
+
+That is exactly the collective the matrix shape demands: a sum across devices that re-shards the output. Press *Reduce-scatter Y* above — the striped partials disappear and each chip is left with one column of the final $Y$. That collective is the entire reason tensor parallelism communicates inside the layer.
+
+We cannot overlap between layers here — the next layer's input is exactly the current layer's reduce-scattered output, so there is nothing yet to communicate ahead of. The overlap happens *inside* the layer, with the matmul work split into a staircase that interleaves partial computation with a reduce-scatter on the previous partial.
+
+<TpStaircase client:visible />
+
+{/* TODO: <EOverP /> — local compute B·E²/P vs comm B·E, ratio knob */}
+
+The useful ratio is $E / P$: compute scales like $B E^2 / P$ and the activation collective is closer to $B E$, so larger $E$ buys room to hide communication and larger $P$ makes each local matmul thinner.
+
+# Hybrid FSDP
+
+A 2D mesh of devices, with each axis carrying a different strategy. Typically FSDP runs on the fast axis (inside a node) and a data-parallel replica axis runs across the slow one (between nodes).
+
+<ShardingStage strategy="hybrid" numChips={4} client:visible />
+
+The point is topology. FSDP collectives happen often and want to live on fast links; replica sync happens less often and tolerates the slow link. Below, step through the **forward pass** of a hybrid step and watch the fast axis fire every layer while the slow axis stays asleep.
+
+<HybridStaircase client:visible />
+
+Get the mesh wrong and the hot per-layer collectives land on the slow axis — the model still trains, but the roofline drops to the inter-node bandwidth.
+
+# The Backward Pass
+
+Forward is only half the step. Backward needs gradients, and getting the gradients into the right shape — sharded, replicated, summed — is where each strategy spends its second round of communication.
+
+The mental flip is simple. Wherever the forward did an all-gather, backward will reduce-scatter; wherever the forward did a reduce-scatter, backward will all-gather. The same overlap rules apply. But the *frequencies* and *axes* change strategy by strategy.
+
+## DP — One all-reduce at the end
+
+W is replicated on every chip, so every chip has computed its own gradient $\partial W^{(i)}$ from its batch slice. To make the gradients agree (so the optimizer steps the replicated parameters identically), DP fires **one all-reduce of $\partial W$** at the end of the step.
+
+<DpBackward client:visible />
+
+## FSDP — One reduce-scatter per layer
+
+Backward visits the layers in reverse. For each layer, the full $W$ is gathered (we need it to compute $\partial X$ and $\partial W$), the gradient is computed at full shape, then reduce-scatter sends each chip back to owning just its row of $\partial W$. The mirror of forward's gather pipeline.
+
+<FsdpBackward client:visible />
+
+## TP — Within-layer dual staircase
+
+Forward's row-parallel TP needed a reduce-scatter inside each layer (after the partial-sum matmul). Backward needs the dual: an **all-gather** inside each layer to broadcast the upstream $\partial Y$ back to all chips before each one computes its local $\partial W$ shard. Same staircase shape, mirrored.
+
+<TpBackward client:visible />
+
+## Hybrid — FSDP per-layer + DP all-reduce at the end
+
+Backward on the hybrid mesh combines the two patterns: per-layer reduce-scatter on the FAST axis (FSDP) plus a single all-reduce on the SLOW axis (DP replicas) at the very end of the step. The slow link finally lights up — once.
+
+<HybridBackward client:visible />
+
+# The Unified Picture
+
+{/* TODO: <UnifiedRoofline /> — all three roofs + four strategies plotted as points; global sliders */}
+
+The strategies differ less by vocabulary than by repair step.
+
+| Strategy | What is split? | What is replicated? | Main repair | Failure mode |
+| --- | --- | --- | --- | --- |
+| Data Parallelism | batch rows | weights, gradients, optimizer state | gradient sync | model state does not fit |
+| FSDP | batch rows + model state | one layer's weights, transiently | all-gather, reduce-scatter | exposed all-gather stalls |
+| Tensor Parallelism | tensor dimensions inside the layer | nothing; each chip's output is a partial sum | reduce-scatter (or all-reduce) inside the layer | local matmuls too small |
+| Hybrid FSDP | model state along one axis, batch along the other | replica groups | topology-aware collectives | hot collectives on the slow link |
+
+Matmul is the train. Collectives lay down the track. If the track arrives before the train needs it, the schedule looks compute-bound. If the track arrives late, the roofline drops to the network roof.
+
+# Further Reading
+
+- [PyTorch FSDP2 `fully_shard`](https://docs.pytorch.org/docs/main/distributed.fsdp.fully_shard.html)
+- [PyTorch Tensor Parallelism](https://docs.pytorch.org/docs/stable/distributed.tensor.parallel)
+- [NVIDIA NCCL collectives](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/usage/collectives.html)
+- [The Roofline Model](https://www.osti.gov/pages/biblio/1379347-roofline-model-pedagogical-tool-program-analysis-optimization)
+- [Efficient Large-Scale Language Model Training on GPU Clusters Using Megatron-LM](https://www.microsoft.com/en-us/research/publication/efficient-large-scale-language-model-training-on-gpu-clusters/)
