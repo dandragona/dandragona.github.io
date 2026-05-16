@@ -26,31 +26,35 @@ const STEPS = [
     gShown: false,
     gMode: 'absent',
     linkActive: false,
-    arCount: 0,
+    linkLabel: null,
+    arPhase: 'idle',
   },
   {
     caption:
-      "Backward computes ∂W locally on each chip. Since chip 0 processed different examples than chip 1, their gradients DISAGREE — that's what the all-reduce will fix.",
+      "Backward computes ∂W locally on each chip. Each chip holds the full ∂W shape, but the values DISAGREE — these are partial sums waiting to be combined.",
     gShown: true,
     gMode: 'local',
     linkActive: false,
-    arCount: 0,
+    linkLabel: null,
+    arPhase: 'idle',
   },
   {
     caption:
-      'All-reduce ∂W. Every chip sums its gradient with the others (mid-flight: striped). Exactly one collective for the entire training step.',
+      'Reduce-scatter ∂W. Chips sum partials pairwise and each ends up owning one column-strip of the summed gradient (yellow). First half of the all-reduce.',
     gShown: true,
-    gMode: 'inflight',
+    gMode: 'rs_done',
     linkActive: true,
-    arCount: 1,
+    linkLabel: 'RS ∂W',
+    arPhase: 'half',
   },
   {
     caption:
-      'AR done. ∂W is identical on every chip (yellow — the same shape and same value as the replicated W is about to receive). The optimizer steps every replica in lockstep.',
+      "All-gather broadcasts each chip's strip to the others. Every chip now holds the full summed ∂W — identical shape and values on every replica. RS + AG = one all-reduce.",
     gShown: true,
     gMode: 'averaged',
-    linkActive: false,
-    arCount: 1,
+    linkActive: true,
+    linkLabel: 'AG ∂W',
+    arPhase: 'done',
   },
 ];
 
@@ -72,15 +76,25 @@ function ChipMatmul({ chipIdx, step }) {
       ? { fill: chipColor }
       : { fill: ABSENT };
 
-  const gFill = () => {
+  const gFill = (r, c) => {
     if (!s.gShown) return { fill: ABSENT };
-    if (s.gMode === 'inflight') return { fill: chipColor, stripe: true };
+    if (s.gMode === 'local') return { fill: chipColor, stripe: true };
+    if (s.gMode === 'rs_done') {
+      // Each chip owns one column-strip of the summed gradient.
+      return c === chipIdx ? { fill: YELLOW } : { fill: ABSENT };
+    }
     if (s.gMode === 'averaged') return { fill: YELLOW };
-    return { fill: chipColor };
+    return { fill: ABSENT };
   };
 
   const gSubtitle =
-    s.gMode === 'local' ? 'local' : s.gMode === 'inflight' ? 'mid-AR' : s.gMode === 'averaged' ? 'averaged' : null;
+    s.gMode === 'local'
+      ? 'local · disagrees'
+      : s.gMode === 'rs_done'
+      ? `col ${chipIdx} owned`
+      : s.gMode === 'averaged'
+      ? 'full · averaged'
+      : null;
 
   return (
     <div
@@ -130,7 +144,7 @@ function ChipMatmul({ chipIdx, step }) {
   );
 }
 
-function ArLink({ active }) {
+function CommLink({ active, label }) {
   const color = active ? YELLOW : 'rgba(31,41,55,0.22)';
   const stroke = active ? 3 : 2;
   return (
@@ -155,10 +169,11 @@ function ArLink({ active }) {
           fontFamily: 'ui-monospace, SFMono-Regular, monospace',
           fontWeight: 600,
           minHeight: 12,
+          whiteSpace: 'nowrap',
           transition: 'color 200ms ease',
         }}
       >
-        AR ∂W
+        {label || ' '}
       </div>
     </div>
   );
@@ -166,6 +181,12 @@ function ArLink({ active }) {
 
 function Counter({ step }) {
   const s = STEPS[step];
+  const arText =
+    s.arPhase === 'half'
+      ? 'all-reduce in progress (RS done · AG pending)'
+      : s.arPhase === 'done'
+      ? 'all-reduce: 1× (= RS + AG)'
+      : 'all-reduce: 0×';
   return (
     <div
       style={{
@@ -180,8 +201,7 @@ function Counter({ step }) {
     >
       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
         <span style={{ display: 'inline-block', width: 10, height: 3, background: YELLOW, borderRadius: 2 }} />
-        all-reduces:
-        <strong style={{ color: YELLOW, minWidth: 14, textAlign: 'right' }}>{s.arCount}×</strong>
+        <span style={{ color: s.arPhase === 'idle' ? INK_SOFT : undefined }}>{arText}</span>
       </span>
     </div>
   );
@@ -194,11 +214,11 @@ export default function DpBackward() {
   return (
     <WidgetShell
       title="DP backward — one all-reduce, end of step"
-      subtitle="W is replicated, so every chip computed a local ∂W from its batch slice. One AR sums them. That is the entire backward-pass communication budget for DP."
+      subtitle="W is replicated, so every chip computed a local ∂W from its batch slice. One all-reduce — really a reduce-scatter followed by an all-gather — combines them. That is the entire backward-pass communication budget for DP."
     >
       <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 4 }}>
         <ChipMatmul chipIdx={0} step={step} />
-        <ArLink active={s.linkActive} />
+        <CommLink active={s.linkActive} label={s.linkLabel} />
         <ChipMatmul chipIdx={1} step={step} />
       </div>
       <Counter step={step} />

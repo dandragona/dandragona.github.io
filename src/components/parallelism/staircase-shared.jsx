@@ -1,10 +1,9 @@
 // Shared primitives for the backward-pass staircase components.
-// The forward components (ShardingStage, TpStaircase, HybridStaircase) have their
+// The forward components (ShardingStage, TpStaircase, FsdpTpStaircase) have their
 // own inline primitives — kept separate to avoid risk of regression.
 
 export const CHIP_COLORS = ['#2563eb', '#059669', '#7c3aed', '#ea580c'];
 export const YELLOW = '#eab308';
-export const SLOW = '#dc2626';
 export const ABSENT = 'rgba(0, 0, 0, 0.08)';
 export const INK = '#1f2937';
 export const INK_SOFT = 'rgba(31, 41, 55, 0.6)';
@@ -13,7 +12,7 @@ export const CARD_BORDER = 'rgba(31, 41, 55, 0.18)';
 export const CELL = 14;
 export const GAP = 2;
 
-export function Cell({ fill, stripe }) {
+export function Cell({ fill, stripe, alpha = 1 }) {
   const bg = stripe
     ? `repeating-linear-gradient(45deg, rgba(255,255,255,0.55) 0 2px, transparent 2px 5px), ${fill}`
     : fill;
@@ -23,10 +22,11 @@ export function Cell({ fill, stripe }) {
         width: CELL,
         height: CELL,
         background: bg,
+        opacity: alpha,
         borderRadius: 3,
         boxSizing: 'border-box',
         border: '1px solid rgba(31, 41, 55, 0.2)',
-        transition: 'background 200ms ease',
+        transition: 'background 200ms ease, opacity 200ms ease',
       }}
     />
   );

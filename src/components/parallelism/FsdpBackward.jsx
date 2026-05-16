@@ -20,9 +20,10 @@ const B = 4;
 const E = 2;
 const NUM_CHIPS = 2;
 
-// Backward visits layers in reverse: L3, L2, L1.
-// Each layer: AG W (need full W for ∂X, ∂W computation), backward compute, RS ∂W.
-// The pipeline runs in reverse order. Below: simplified steps to surface the pattern.
+// Backward visits layers in reverse: L4, L3, L2, L1 (matches the L1-L4 forward
+// pipeline shown in OverlapTimeline strategy="fsdp"). Each layer: AG W (need
+// full W for ∂X and ∂W), backward compute, RS ∂W. Steps below bundle compute
+// with the AG/RS overlap that follows it.
 const STEPS = [
   {
     caption:
@@ -32,69 +33,81 @@ const STEPS = [
     yShown: true,
     gShown: false,
     gMode: 'absent',
-    fastActive: false,
-    fastLabel: null,
-    fastCount: 0,
+    commActive: false,
+    commLabel: null,
+    commCount: 0,
   },
   {
     caption:
-      'Layer 3 backward begins. First, all-gather W₃ — we need the full W to compute ∂W₃ and the upstream ∂X. (If the forward cached it, this AG may be skipped.)',
-    layerLabel: 'AG W₃',
+      'Layer 4 backward begins. First, all-gather W₄ — we need the full W to compute ∂W₄ and the upstream ∂X. (If the forward cached it, this AG may be skipped.)',
+    layerLabel: 'AG W₄',
     wMat: false,
     yShown: true,
     gShown: false,
     gMode: 'absent',
-    fastActive: true,
-    fastLabel: 'AG W₃',
-    fastCount: 1,
+    commActive: true,
+    commLabel: 'AG W₄',
+    commCount: 1,
   },
   {
     caption:
-      'W₃ materialized (yellow). Compute backward L3: each chip produces ∂W₃ at FULL shape from its batch slice. The chips disagree on values — that\'s why we reduce-scatter next.',
-    layerLabel: 'W₃',
+      'W₄ materialized (yellow). Compute backward L4: each chip produces ∂W₄ at FULL shape from its batch slice. The chips disagree on values — that\'s why we reduce-scatter next.',
+    layerLabel: 'W₄',
     wMat: true,
     yShown: true,
     gShown: true,
     gMode: 'full',
-    fastActive: false,
-    fastLabel: null,
-    fastCount: 1,
+    commActive: false,
+    commLabel: null,
+    commCount: 1,
   },
   {
     caption:
-      "Reduce-scatter ∂W₃ on the fast axis: chip 0 keeps row 0, chip 1 keeps row 1 — the gradient ends up FSDP-sharded, matching W's storage. Layer 2's AG can overlap here.",
-    layerLabel: 'RS ∂W₃ · AG W₂',
+      "Reduce-scatter ∂W₄: chip 0 keeps row 0, chip 1 keeps row 1 — the gradient ends up FSDP-sharded, matching W's storage. Layer 3's AG can overlap here.",
+    layerLabel: 'RS ∂W₄ · AG W₃',
     wMat: false,
     yShown: true,
     gShown: true,
     gMode: 'rs-inflight',
-    fastActive: true,
-    fastLabel: 'RS ∂W₃ + AG W₂',
-    fastCount: 3,
+    commActive: true,
+    commLabel: 'RS ∂W₄ + AG W₃',
+    commCount: 3,
   },
   {
     caption:
-      "Layer 2 backward computes ∂W₂; meanwhile RS ∂W₂ overlaps with AG W₁ for layer 1. Same pipeline as forward, just in reverse and with RS replacing the role of AG.",
+      "Layer 3 backward computes ∂W₃; meanwhile RS ∂W₃ overlaps with AG W₂ for layer 2. Same pipeline as forward, just in reverse and with RS replacing the role of AG.",
+    layerLabel: 'W₃ · RS ∂W₃ · AG W₂',
+    wMat: true,
+    yShown: true,
+    gShown: true,
+    gMode: 'sharded',
+    commActive: true,
+    commLabel: 'RS ∂W₃ + AG W₂',
+    commCount: 5,
+  },
+  {
+    caption:
+      "Layer 2 backward computes ∂W₂; RS ∂W₂ overlaps with AG W₁. The middle of the staircase looks the same on every layer.",
     layerLabel: 'W₂ · RS ∂W₂ · AG W₁',
     wMat: true,
     yShown: true,
     gShown: true,
     gMode: 'sharded',
-    fastActive: true,
-    fastLabel: 'RS ∂W₂ + AG W₁',
-    fastCount: 5,
+    commActive: true,
+    commLabel: 'RS ∂W₂ + AG W₁',
+    commCount: 7,
   },
   {
     caption:
-      'Final layer: ∂W₁ is computed, reduce-scattered, and we are done with the backward. Each chip now owns its FSDP shard of every layer\'s gradient.',
+      'Final layer: ∂W₁ is computed and reduce-scattered. Nothing left to prefetch — the tail of the staircase runs alone.',
     layerLabel: 'all sharded',
     wMat: false,
     yShown: true,
     gShown: true,
     gMode: 'sharded',
-    fastActive: true,
-    fastLabel: 'RS ∂W₁',
-    fastCount: 6,
+    commActive: true,
+    commLabel: 'RS ∂W₁',
+    commCount: 8,
   },
   {
     caption:
@@ -104,9 +117,9 @@ const STEPS = [
     yShown: true,
     gShown: true,
     gMode: 'sharded',
-    fastActive: false,
-    fastLabel: null,
-    fastCount: 6,
+    commActive: false,
+    commLabel: null,
+    commCount: 8,
   },
 ];
 
@@ -135,7 +148,7 @@ function ChipMatmul({ chipIdx, step }) {
 
   const gFill = (r) => {
     if (!s.gShown) return { fill: ABSENT };
-    if (s.gMode === 'full') return { fill: chipColor };
+    if (s.gMode === 'full') return { fill: chipColor, stripe: true };
     if (s.gMode === 'rs-inflight') {
       return ownsWRow(chipIdx, r)
         ? { fill: chipColor }
@@ -211,7 +224,7 @@ function ChipMatmul({ chipIdx, step }) {
   );
 }
 
-function FastLink({ active, label }) {
+function CommLink({ active, label }) {
   const color = active ? YELLOW : 'rgba(31,41,55,0.22)';
   const stroke = active ? 3 : 2;
   return (
@@ -261,8 +274,8 @@ function Counter({ step }) {
     >
       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: INK }}>
         <span style={{ display: 'inline-block', width: 10, height: 3, background: YELLOW, borderRadius: 2 }} />
-        fast comm:
-        <strong style={{ color: YELLOW, minWidth: 14, textAlign: 'right' }}>{s.fastCount}×</strong>
+        collectives:
+        <strong style={{ color: YELLOW, minWidth: 14, textAlign: 'right' }}>{s.commCount}×</strong>
       </span>
     </div>
   );
@@ -279,7 +292,7 @@ export default function FsdpBackward() {
     >
       <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 4 }}>
         <ChipMatmul chipIdx={0} step={step} />
-        <FastLink active={s.fastActive} label={s.fastLabel} />
+        <CommLink active={s.commActive} label={s.commLabel} />
         <ChipMatmul chipIdx={1} step={step} />
       </div>
       <Counter step={step} />

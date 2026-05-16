@@ -28,13 +28,12 @@ const NUM_CHUNKS = B;
 const TOTAL_STEPS = NUM_CHUNKS + 2; // mirror of forward staircase
 
 const STEP_CAPTIONS = [
-  'Forward complete: ∂Y arrives SHARDED — each chip owns one column. Backward needs the full ∂Y on every chip, so the dual collective is an ALL-GATHER (mirror of forward\'s reduce-scatter).',
-  "Chunk 1 of the backward begins. Chip 0 and chip 1 swap their ∂Y columns for batch row 0 on the fast link — the staircase's first AG fires.",
-  'Chunk 2: gather ∂Y for row 1 while chunk 1\'s local matmul (∂W contribution from row 0) starts. The overlap pattern is the SAME staircase, just with AG replacing RS.',
-  "Chunk 3 gathers; chunk 2 computes. Each chip is accumulating its own row of ∂W.",
-  'Chunk 4 gathers; chunk 3 computes. The final chunk is in flight.',
-  "Compute is done. Last chunk's AG finishes alone — the unavoidable tail of the staircase.",
-  '∂W on each chip is the chip\'s row of the full gradient — no further communication needed (X was sharded along E, so each chip already owns the right X slice to compute its W row). Forward-RS\'s dual is complete.',
+  "Chunk 1 begins: AG of ∂Y row 0 fires across chips. No compute yet — the first row is still being gathered. (∂Y arrived sharded from the forward's RS; the dual collective is an ALL-GATHER.)",
+  "Chunk 2's AG starts; chunk 1's compute (∂W contribution from row 0) overlaps. The staircase is engaged — same shape as the forward, just with AG replacing RS.",
+  'Chunk 3 gathers ∂Y row 2; chunk 2 accumulates ∂W from row 1.',
+  'Chunk 4 gathers ∂Y row 3; chunk 3 accumulates ∂W from row 2. The final AG is in flight.',
+  "All AGs are done. Last chunk's compute (∂W from row 3) runs alone — the unavoidable tail of the staircase (the dual of forward's trailing RS).",
+  "∂W on each chip is the chip's row of the full gradient — no further communication needed (X was sharded along E, so each chip already owns the right X slice to compute its W row). Forward-RS's dual is complete.",
 ];
 
 // State per chunk: at time t
@@ -60,14 +59,11 @@ function dyState(rowIdx, step) {
   return 'consumed';
 }
 
-function dwAccumulated(rowIdx, step, chipIdx) {
-  // ∂W is sized [E, E]. Chip i owns row i (matches W's row-sharding from forward).
-  // ∂W accumulates as chunks complete: a chunk's contribution to ∂W lands at step == chunk_idx + 1
-  // and stays.
-  if (rowIdx !== chipIdx) return false;
-  // Did ANY chunk's compute land by `step`? Chunk k's compute completes at step k+1.
-  // So ∂W (chip's row) is populated once step >= 2 (the first chunk's compute step).
-  return step >= 2;
+function dwChunksAccumulated(step) {
+  // ∂W is sized [E, E]; chip i owns row i (matches W's row-sharding from forward).
+  // ∂W's row accumulates as chunks complete: chunk k's compute completes at step k+1,
+  // so the number of chunks landed by `step` is max(0, step - 1) capped at NUM_CHUNKS.
+  return Math.max(0, Math.min(NUM_CHUNKS, step - 1));
 }
 
 function ChipMatmul({ chipIdx, step }) {
@@ -84,25 +80,26 @@ function ChipMatmul({ chipIdx, step }) {
   const wFill = (r) =>
     r === chipIdx ? { fill: chipColor } : { fill: ABSENT };
 
-  // ∂Y: shape [B, E]. We render the per-row state.
-  // For each batch row r, the chip's view of ∂Y[r,:] depends on dyState.
+  // ∂Y: shape [B, E]. Chip persistently owns its column shard for the whole
+  // backward pass — only the peer column is what AG temporarily materializes
+  // and then frees once that row's ∂W contribution lands.
   const dyFill = (r, c) => {
+    if (c === chipIdx) return { fill: chipColor };
     const state = dyState(r, step);
-    if (state === 'absent' || state === 'consumed') return { fill: ABSENT };
-    if (state === 'partial') {
-      // Mid-AG: chip's own column is solid; peer's column is striped (incoming).
-      return c === chipIdx ? { fill: chipColor } : { fill: chipColor, stripe: true };
-    }
-    // 'full': both columns colored (the gathered row), highlighted.
-    return { fill: chipColor };
+    if (state === 'partial') return { fill: chipColor, stripe: true };
+    if (state === 'full') return { fill: chipColor };
+    return { fill: ABSENT };
   };
 
-  // ∂W: shape [E, E]. Chip owns its row. Cell colored once any compute has landed.
-  const dwFill = (r) =>
-    dwAccumulated(r, step, chipIdx) ? { fill: chipColor } : { fill: ABSENT };
+  // ∂W: shape [E, E]. Chip owns its row. Cell fades in from light to solid as
+  // each chunk's contribution accumulates — matching the "k/N chunks" subtitle.
+  const chunksAccumulated = dwChunksAccumulated(step);
+  const dwFill = (r) => {
+    if (r !== chipIdx || chunksAccumulated === 0) return { fill: ABSENT };
+    const alpha = 0.3 + 0.7 * (chunksAccumulated / NUM_CHUNKS);
+    return { fill: chipColor, alpha };
+  };
 
-  // ∂W subtitle: how many chunks have accumulated
-  const chunksAccumulated = Math.max(0, Math.min(NUM_CHUNKS, step - 1));
   const dwSubtitle = chunksAccumulated > 0 ? `${chunksAccumulated}/${NUM_CHUNKS} chunks` : null;
 
   // ∂Y subtitle: which row is currently in flight

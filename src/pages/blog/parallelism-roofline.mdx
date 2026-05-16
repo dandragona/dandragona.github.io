@@ -2,40 +2,43 @@
 layout: ../../layouts/BlogPostLayout.astro
 title: "Parallelism by the Roofline"
 pubDate: 2026-05-10
-description: "One matmul, four strategies. A visual walk through data parallelism, FSDP, tensor parallelism, and hybrid FSDP — and the roofline that decides between them."
+description: "One matmul, four strategies. A visual walk through data parallelism, FSDP, tensor parallelism, and FSDP + TP — and the roofline that decides between them."
 ---
 
+import CollectivePrimer from '../../components/parallelism/CollectivePrimer.jsx';
 import ShardingStage from '../../components/parallelism/ShardingStage.jsx';
 import OverlapTimeline from '../../components/parallelism/OverlapTimeline.jsx';
 import TpStaircase from '../../components/parallelism/TpStaircase.jsx';
-import HybridStaircase from '../../components/parallelism/HybridStaircase.jsx';
+import FsdpTpStaircase from '../../components/parallelism/FsdpTpStaircase.jsx';
 import DpBackward from '../../components/parallelism/DpBackward.jsx';
 import FsdpBackward from '../../components/parallelism/FsdpBackward.jsx';
 import TpBackward from '../../components/parallelism/TpBackward.jsx';
-import HybridBackward from '../../components/parallelism/HybridBackward.jsx';
+import FsdpTpBackward from '../../components/parallelism/FsdpTpBackward.jsx';
 
 A training step is a fight over three budgets: memory per device, compute per device, and communication between devices. Every parallelism strategy is a different way of paying those budgets for the same arithmetic.
 
-To keep the strategies comparable, we will refuse to change the example. The whole post comes back to one linear layer:
+To keep the strategies comparable, we use a single example. The whole post comes back to one linear layer:
 
 $$
 X[B, E] \; @ \; W[E, E] \rightarrow Y[B, E]
 $$
 
-The cost is roughly $2 B E^2$ floating point operations. In the diagrams below we use $B = 4$, $E = 2$, and shard across two TPUs (except hybrid, which needs a 2×2 mesh). That is the train we want to keep moving. The question every strategy answers in its own way:
+The cost is roughly $2 B E^2$ floating point operations. That is the train we want to keep moving. The question every strategy answers in its own way:
 
 > What is split, what is replicated, what communication repairs the split, and can that communication be hidden under matmul compute?
+
+The "communication" piece is always one of a small set of collectives: **all-gather**, **reduce-scatter**, **all-reduce**, and (occasionally) **all-to-all**. Each is defined and animated in the [appendix](#appendix-the-collectives) — every mention below links to its panel.
 
 {/* ===========================================================
      SECTION OUTLINE — drives the rest of the post.
 
-     1. The roofline (compute, HBM, network)        → RooflineExplorer
-     2. Data parallelism                            → ShardingStage strategy="dp"
-     3. FSDP (memory, then overlap)                 → ShardingStage strategy="fsdp" + FsdpTimeline + RaceGauge
-     4. Tensor parallelism (within-layer overlap)   → ShardingStage strategy="tp" + TpStaircase + EOverP knob
-     5. Hybrid FSDP (mesh, topology)                → ShardingStage strategy="hybrid" + HybridMesh
-     6. Backward, briefly
-     7. Unified picture + strategy comparison
+     1. Data parallelism                            → ShardingStage strategy="dp" + OverlapTimeline strategy="dp"
+     2. FSDP (memory, then overlap)                 → ShardingStage strategy="fsdp" + OverlapTimeline strategy="fsdp"
+     3. Tensor parallelism (within-layer overlap)   → ShardingStage strategy="tp" + TpStaircase
+     4. FSDP + TP (2D mesh)                         → ShardingStage strategy="fsdp_tp" + FsdpTpStaircase
+     5. Backward, briefly                           → DpBackward / FsdpBackward / TpBackward / FsdpTpBackward
+     6. Unified picture + strategy comparison       (+ RooflineExplorer, RaceGauge, EOverP, UnifiedRoofline TODOs)
+     Appendix. The four collectives                 → CollectivePrimer
    =========================================================== */}
 
 # Data Parallelism
@@ -44,13 +47,15 @@ Replicate the weights, split the batch. Each device sees a different slice of $X
 
 <ShardingStage strategy="dp" client:visible />
 
-Across chips, every $W$ is identical; each chip owns a different chunk of the batch dimension. The forward pass is embarrassingly parallel. The repair step is at the end of the step: the gradients of the replicated $W$ must agree across devices, so an all-reduce (or equivalent reduce-scatter + all-gather) closes the loop.
+Across chips, every $W$ is identical; each chip owns a different chunk of the batch dimension. The forward pass is literally just parallelized. The repair step comes at the end: the gradients of the replicated $W$ must agree across devices, so an [all-reduce](#collective-all-reduce) of $\partial W$ closes the loop.
 
 The win is throughput, not memory. Every device still stores the full model, the full gradient, and the full optimizer state.
 
 Where, then, is the compute-vs-comm overlap? The forward pass has none — every chip just multiplies locally. The overlap lives in the *backward* pass: as each layer's gradients become available, their all-reduce can run while earlier layers are still computing their backward.
 
 <OverlapTimeline strategy="dp" client:visible />
+
+One fact about that all-reduce, worth carrying into the next section: **an [all-reduce](#collective-all-reduce) is exactly a [reduce-scatter](#collective-reduce-scatter) followed by an [all-gather](#collective-all-gather)** — the appendix's all-reduce panel literally pauses on the reduce-scatter result mid-step. The bandwidth-optimal ring algorithm is implemented as those two phases — each moves $(N{-}1)M/N$ bytes per chip, summing to the all-reduce's familiar $2(N{-}1)M/N$. FSDP is what happens when you take that all-reduce and pull it apart in time: an all-gather of $W$ in forward, a reduce-scatter of $\partial W$ in backward. Same total volume as DP, very different memory profile.
 
 # FSDP
 
@@ -63,6 +68,8 @@ The mental model that makes this work: at any moment, only one or two layers are
 The performance question is whether the gather for layer $N{+}1$ can finish while layer $N$ is still computing. Toggle the modes below to see the difference: in the overlapped schedule the compute stream is continuous; in the naive schedule each matmul waits for its all-gather to land, and the step takes roughly twice as long.
 
 <OverlapTimeline strategy="fsdp" client:visible />
+
+The same per-layer all-gather will return in the backward pass — computing $\partial X$ also needs the full $W$ — so backward either repeats the gather or reuses a forward-cached copy. We'll see that mirroring later.
 
 {/* TODO: <RaceGauge /> — small widget that scrubs the AG/matmul duration ratio */}
 
@@ -88,17 +95,35 @@ We cannot overlap between layers here — the next layer's input is exactly the 
 
 The useful ratio is $E / P$: compute scales like $B E^2 / P$ and the activation collective is closer to $B E$, so larger $E$ buys room to hide communication and larger $P$ makes each local matmul thinner.
 
-# Hybrid FSDP
+# FSDP + TP
 
-A 2D mesh of devices, with each axis carrying a different strategy. Typically FSDP runs on the fast axis (inside a node) and a data-parallel replica axis runs across the slow one (between nodes).
+FSDP and TP are not alternatives — they are orthogonal axes of the same problem. FSDP shrinks **memory per device** by sharding the model state. TP shrinks **compute per device** by slicing each layer's matmul. The first attacks weight memory; the second attacks per-chip compute. Together, on a 2D mesh, you get both.
 
-<ShardingStage strategy="hybrid" numChips={4} client:visible />
+This matters most when the per-chip batch gets small. Pure FSDP needs each chip to do enough work for the all-gather to hide under the matmul — empirically that's around 850 tokens per chip on a TPU pod. Pure TP needs the local matmul to stay above the bandwidth knee, which limits how thin you can slice it. Stack them and the [JAX scaling book](https://jax-ml.github.io/scaling-book/training/) reports a per-chip floor closer to ~100 tokens — roughly an 8× shrink.
 
-The point is topology. FSDP collectives happen often and want to live on fast links; replica sync happens less often and tolerates the slow link. Below, step through the **forward pass** of a hybrid step and watch the fast axis fire every layer while the slow axis stays asleep.
+The mesh is 2D: one axis carries FSDP, the other carries TP. The same matmul as before,
 
-<HybridStaircase client:visible />
+$$
+X[B, E] \; @ \; W[E, E] \rightarrow Y[B, E]
+$$
 
-Get the mesh wrong and the hot per-layer collectives land on the slow axis — the model still trains, but the roofline drops to the inter-node bandwidth.
+is sharded twice: $X$'s batch is split along the FSDP axis, $X$'s contraction is split along the TP axis, and $W$'s rows are split along **both** axes — each chip owns a tiny block.
+
+<ShardingStage strategy="fsdp_tp" numChips={4} E={4} client:visible />
+
+Forward, per layer, has two collectives — one on each axis:
+
+1. **AG along the FSDP axis:** chips with the same TP rank pool their FSDP shards of $W$. After this, each chip holds the W slice it needs for its local matmul — its TP slice of the contraction rows, no longer further split across FSDP.
+2. Local matmul. No comm needed: each chip multiplies its X slice by its W slice, summing over its TP slice of the contraction. The result is a **partial-sum** output at full shape — every chip has an opinion on every column of its batch slice, but the sum across TP is incomplete.
+3. **RS along the TP axis:** chips with the same FSDP rank sum-and-scatter the partials. Each chip ends up owning one TP slice of the final $Y$.
+
+The output's layout matches $X$'s, so the next layer can start without an intermediate re-shard.
+
+Now look at how the three streams interleave once the pipeline is moving. The next layer's AG can begin on the FSDP axis while the current layer's matmul and TP-axis RS are still running — different axes, no contention. The diagram below is the steady state, mid-pipeline: L1's W is already gathered, its matmul is being chunked and reduce-scattered along TP, and L2's W is prefetching along FSDP.
+
+<FsdpTpStaircase client:visible />
+
+The key shift from pure FSDP or pure TP: **both axes carry per-layer traffic**, but with different collectives. AG on the FSDP axis, RS on the TP axis. The roofline question splits in two — one per axis — and the optimal mesh shape balances them. Bigger batches push the FSDP axis larger; the bandwidth ratio between the two axes pulls the other way. The [scaling book](https://jax-ml.github.io/scaling-book/training/) has the closed-form rule.
 
 # The Backward Pass
 
@@ -124,11 +149,11 @@ Forward's row-parallel TP needed a reduce-scatter inside each layer (after the p
 
 <TpBackward client:visible />
 
-## Hybrid — FSDP per-layer + DP all-reduce at the end
+## FSDP + TP — collectives swapped
 
-Backward on the hybrid mesh combines the two patterns: per-layer reduce-scatter on the FAST axis (FSDP) plus a single all-reduce on the SLOW axis (DP replicas) at the very end of the step. The slow link finally lights up — once.
+The 2D backward mirrors the forward, with both collectives swapped across axes. Forward fired AG along the FSDP axis (to gather $W$) and RS along the TP axis (to reduce-scatter the partial-sum $Y$). Backward fires the other collective on each axis: AG along the TP axis (broadcasting the upstream $\partial Y$) and RS along the FSDP axis (reducing the full-shape $\partial W$ back into the FSDP layout). Same per-layer cost on each axis, opposite collective.
 
-<HybridBackward client:visible />
+<FsdpTpBackward client:visible />
 
 # The Unified Picture
 
@@ -140,15 +165,24 @@ The strategies differ less by vocabulary than by repair step.
 | --- | --- | --- | --- | --- |
 | Data Parallelism | batch rows | weights, gradients, optimizer state | gradient sync | model state does not fit |
 | FSDP | batch rows + model state | one layer's weights, transiently | all-gather, reduce-scatter | exposed all-gather stalls |
-| Tensor Parallelism | tensor dimensions inside the layer | nothing; each chip's output is a partial sum | reduce-scatter (or all-reduce) inside the layer | local matmuls too small |
-| Hybrid FSDP | model state along one axis, batch along the other | replica groups | topology-aware collectives | hot collectives on the slow link |
+| Tensor Parallelism | $X$'s contraction + $W$'s rows | nothing; each chip's output is a partial sum | reduce-scatter $Y$ inside the layer | local matmuls too small |
+| FSDP + TP | both axes of a 2D mesh: batch + model state along FSDP, layer compute along TP | nothing | AG along FSDP + RS along TP, every layer | wrong mesh shape — unbalanced axes |
 
 Matmul is the train. Collectives lay down the track. If the track arrives before the train needs it, the schedule looks compute-bound. If the track arrives late, the roofline drops to the network roof.
 
 # Further Reading
 
+- [JAX scaling book — training chapter](https://jax-ml.github.io/scaling-book/training/) (the source for the FSDP + TP framing here)
 - [PyTorch FSDP2 `fully_shard`](https://docs.pytorch.org/docs/main/distributed.fsdp.fully_shard.html)
 - [PyTorch Tensor Parallelism](https://docs.pytorch.org/docs/stable/distributed.tensor.parallel)
 - [NVIDIA NCCL collectives](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/usage/collectives.html)
 - [The Roofline Model](https://www.osti.gov/pages/biblio/1379347-roofline-model-pedagogical-tool-program-analysis-optimization)
 - [Efficient Large-Scale Language Model Training on GPU Clusters Using Megatron-LM](https://www.microsoft.com/en-us/research/publication/efficient-large-scale-language-model-training-on-gpu-clusters/)
+
+# Appendix: The Collectives
+
+Every collective the post links to lives here. The first three — all-gather, reduce-scatter, all-reduce — are the ones that appear above. The all-to-all is included for completeness: it doesn't show up in DP/FSDP/TP/FSDP+TP, but it's the workhorse of mixture-of-experts routing and sequence-parallel transposes, so it's worth knowing alongside the rest.
+
+Step through each panel; the captions describe what changes between frames.
+
+<CollectivePrimer client:visible />

@@ -103,34 +103,6 @@ const SCHEMAS = {
       },
     },
   },
-  hybrid: {
-    title: 'Hybrid FSDP — Two Comm Axes',
-    blurb:
-      'Frequent FSDP all-gathers ride the fast intra-node link. The slow inter-node link only carries the replica all-reduce, once per step.',
-    lanes: [
-      { id: 'compute', label: 'compute' },
-      { id: 'comm', label: 'fast axis (FSDP)' },
-      { id: 'commSlow', label: 'slow axis (replica)' },
-    ],
-    duration: 26,
-    modes: {
-      default: {
-        compute: [
-          { idx: 0, start: 4, dur: 4, op: 'matmul', tag: 'L1' },
-          { idx: 1, start: 8, dur: 4, op: 'matmul', tag: 'L2' },
-          { idx: 2, start: 12, dur: 4, op: 'matmul', tag: 'L3' },
-          { idx: 3, start: 16, dur: 4, op: 'matmul', tag: 'L4' },
-        ],
-        comm: [
-          { idx: 0, start: 0, dur: 4, op: 'AG', tag: 'W1' },
-          { idx: 1, start: 4, dur: 4, op: 'AG', tag: 'W2' },
-          { idx: 2, start: 8, dur: 4, op: 'AG', tag: 'W3' },
-          { idx: 3, start: 12, dur: 4, op: 'AG', tag: 'W4' },
-        ],
-        commSlow: [{ idx: 0, start: 20, dur: 5, op: 'AR', tag: 'grad' }],
-      },
-    },
-  },
 };
 
 const PAD_LEFT = 110;

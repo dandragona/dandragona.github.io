@@ -30,11 +30,12 @@ const STRATEGIES = {
       "One shared X, sliced along the contraction dimension E. W's rows are partitioned to match. Each chip computes a full-shape partial sum of Y.",
     supportsReduce: true,
   },
-  hybrid: {
-    label: 'Hybrid FSDP (2×2 mesh)',
+  fsdp_tp: {
+    label: 'FSDP + TP (2×2 mesh)',
     blurb:
-      "Two-axis mesh: W's rows are sharded on the fast (FSDP) axis; the batch is sharded on the slow (DP) axis. Chips sharing an FSDP rank mirror their W slice.",
+      "Two-axis mesh: W's rows split along BOTH axes; X's batch split along FSDP; X's contraction split along TP. Forward: AG on FSDP to gather W, then matmul, then RS on TP to reduce the partial-sum output.",
     supportsMaterialize: true,
+    supportsReduce: true,
   },
 };
 
@@ -43,17 +44,45 @@ function ownsBatchRow(strategy, chipIdx, numChips, B, row) {
     const rowsPerChip = B / numChips;
     return Math.floor(row / rowsPerChip) === chipIdx;
   }
-  if (strategy === 'hybrid') {
-    const dpRank = Math.floor(chipIdx / 2);
-    const rowsPerDp = B / 2;
-    return Math.floor(row / rowsPerDp) === dpRank;
+  if (strategy === 'fsdp_tp') {
+    const fsdpRank = Math.floor(chipIdx / 2);
+    const rowsPerFsdp = B / 2;
+    return Math.floor(row / rowsPerFsdp) === fsdpRank;
   }
   return false;
 }
 
 function ownsWRow(strategy, chipIdx, row) {
   if (strategy === 'fsdp' || strategy === 'tp') return row === chipIdx;
-  if (strategy === 'hybrid') return row === chipIdx % 2;
+  if (strategy === 'fsdp_tp') {
+    // TP-outer indexing: rows split first by TP rank (rows {0,1} = TP 0,
+    // rows {2,3} = TP 1), then by FSDP rank within each TP block.
+    // This makes the post-AG view contiguous — each TP rank gets a
+    // contiguous half of W's rows.
+    const fsdpRank = Math.floor(chipIdx / 2);
+    const tpRank = chipIdx % 2;
+    return row === 2 * tpRank + fsdpRank;
+  }
+  return false;
+}
+
+function ownsContractionCol(strategy, chipIdx, E, col) {
+  if (strategy === 'tp') return col === chipIdx;
+  if (strategy === 'fsdp_tp') {
+    const tpRank = chipIdx % 2;
+    const colsPerTp = E / 2;
+    return Math.floor(col / colsPerTp) === tpRank;
+  }
+  return false;
+}
+
+function ownsYOutputCol(strategy, chipIdx, E, col) {
+  if (strategy === 'tp') return col === chipIdx;
+  if (strategy === 'fsdp_tp') {
+    const tpRank = chipIdx % 2;
+    const colsPerTp = E / 2;
+    return Math.floor(col / colsPerTp) === tpRank;
+  }
   return false;
 }
 
@@ -124,12 +153,17 @@ function OpSymbol({ children, containerHeight }) {
   );
 }
 
-function getFills({ strategy, chipIdx, numChips, B, materialized, reduced }) {
+function getFills({ strategy, chipIdx, numChips, B, E, materialized, reduced }) {
   const chipColor = CHIP_COLORS[chipIdx % CHIP_COLORS.length];
 
   const xFill = (r, c) => {
     if (strategy === 'tp') {
       return c === chipIdx ? { fill: chipColor } : { fill: ABSENT };
+    }
+    if (strategy === 'fsdp_tp') {
+      const ownsR = ownsBatchRow(strategy, chipIdx, numChips, B, r);
+      const ownsC = ownsContractionCol(strategy, chipIdx, E, c);
+      return ownsR && ownsC ? { fill: chipColor } : { fill: ABSENT };
     }
     return ownsBatchRow(strategy, chipIdx, numChips, B, r)
       ? { fill: chipColor }
@@ -137,6 +171,17 @@ function getFills({ strategy, chipIdx, numChips, B, materialized, reduced }) {
   };
 
   const wFill = (r) => {
+    if (strategy === 'fsdp_tp') {
+      if (materialized) {
+        // After AG of W along the FSDP axis, each TP rank pools its FSDP shards
+        // into a contiguous half of W's rows. tpRank 0 → rows {0,1}, tpRank 1 → rows {2,3}.
+        const tpRank = chipIdx % 2;
+        return Math.floor(r / 2) === tpRank ? { fill: YELLOW } : { fill: ABSENT };
+      }
+      return ownsWRow(strategy, chipIdx, r)
+        ? { fill: chipColor }
+        : { fill: ABSENT };
+    }
     if (materialized) return { fill: YELLOW };
     if (strategy === 'dp') return { fill: YELLOW };
     return ownsWRow(strategy, chipIdx, r)
@@ -151,7 +196,20 @@ function getFills({ strategy, chipIdx, numChips, B, materialized, reduced }) {
       }
       return { fill: chipColor, stripe: true };
     }
-    if ((strategy === 'fsdp' || strategy === 'hybrid') && !materialized) {
+    if (strategy === 'fsdp_tp') {
+      // Y is empty until W has been gathered (matmul can't run otherwise).
+      if (!materialized) return { fill: ABSENT };
+      const ownsR = ownsBatchRow(strategy, chipIdx, numChips, B, r);
+      if (!ownsR) return { fill: ABSENT };
+      if (reduced) {
+        return ownsYOutputCol(strategy, chipIdx, E, c)
+          ? { fill: chipColor }
+          : { fill: ABSENT };
+      }
+      // Post-matmul, pre-RS: partial sum at full output shape.
+      return { fill: chipColor, stripe: true };
+    }
+    if (strategy === 'fsdp' && !materialized) {
       return { fill: ABSENT };
     }
     return ownsBatchRow(strategy, chipIdx, numChips, B, r)
@@ -168,6 +226,7 @@ function Chip({ chipIdx, numChips, strategy, B, E, materialized, reduced }) {
     chipIdx,
     numChips,
     B,
+    E,
     materialized,
     reduced,
   });
