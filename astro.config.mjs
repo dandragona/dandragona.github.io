@@ -8,7 +8,7 @@ import rehypeKatex from 'rehype-katex';
 
 // https://astro.build/config
 export default defineConfig({
-  site: 'https://dandragona.github.io',
+  site: 'https://dandragona.me',
   integrations: [react(), mdx()],
   markdown: {
     remarkPlugins: [remarkMath],
