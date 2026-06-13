@@ -4,6 +4,7 @@ import Layout from '../layouts/Layout.astro';
 ---
 
 <Layout title="Astro" hideNav={true} fullWidth={true}>
+	<div class="bloch-placeholder" aria-hidden="true"></div>
 	<div class="container">
 		<h1>Daniel Mandragona</h1>
 		<p>Software Engineer</p>
@@ -12,10 +13,17 @@ import Layout from '../layouts/Layout.astro';
 			<a href="/links" class="button"><span class="gradient-text">Links</span></a>
 		</div>
 	</div>
-	<BlochSphere client:load />
+	<BlochSphere client:visible />
 </Layout>
 
 <style>
+	.bloch-placeholder {
+		position: fixed;
+		inset: 0;
+		z-index: 0;
+		background-color: #d5bbb1;
+		pointer-events: none;
+	}
 	.container {
 		position: absolute;
 		top: 50%;

@@ -2,7 +2,6 @@
 import React, { useRef } from 'react';
 import { Canvas, useFrame, extend } from '@react-three/fiber';
 import { OrbitControls, Sphere, Text } from '@react-three/drei';
-import * as THREE from 'three';
 import GradientMaterial from './GradientMaterial';
 
 extend({ GradientMaterial });

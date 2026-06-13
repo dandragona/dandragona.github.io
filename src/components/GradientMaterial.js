@@ -1,10 +1,10 @@
 import { shaderMaterial } from '@react-three/drei';
-import * as THREE from 'three';
+import { Color } from 'three';
 
 const GradientMaterial = shaderMaterial(
   {
-    color1: new THREE.Color('#c4b5fd'),
-    color2: new THREE.Color('#4f46e5'),
+    color1: new Color('#c4b5fd'),
+    color2: new Color('#4f46e5'),
     scale: 1.0,
   },
   // vertex shader
