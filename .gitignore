@@ -25,3 +25,16 @@ pnpm-debug.log*
 
 # backup directory
 old_website/
+
+# claude code local settings
+.claude/
+
+# playwright mcp scratch output
+.playwright-mcp/
+
+# scratch screenshots in repo root
+/*.png
+
+# stray scratch
+website3/
+*.zip
