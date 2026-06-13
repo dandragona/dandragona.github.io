@@ -20,106 +20,42 @@ const B = 4;
 const E = 2;
 const NUM_CHIPS = 2;
 
-// Backward visits layers in reverse: L4, L3, L2, L1 (matches the L1-L4 forward
-// pipeline shown in OverlapTimeline strategy="fsdp"). Each layer: AG W (need
-// full W for ∂X and ∂W), backward compute, RS ∂W. Steps below bundle compute
-// with the AG/RS overlap that follows it.
+// Single-layer mirror of FSDP forward: AG W → compute ∂W full-shape → RS ∂W
+// back to the FSDP-sharded layout. The DP-backward chip-pair pattern carries
+// the visual; the multi-layer pipelining argument lives in the forward
+// OverlapTimeline and the DP-backward subsection above.
 const STEPS = [
   {
-    caption:
-      'Forward done. Every chip holds its batch slice of Y. W is back to sharded (each chip owns its FSDP row). Now we walk the layers in REVERSE.',
-    layerLabel: 'sharded',
+    caption: 'Start: W is sharded across chips, ∂W not yet computed.',
     wMat: false,
-    yShown: true,
     gShown: false,
     gMode: 'absent',
     commActive: false,
     commLabel: null,
-    commCount: 0,
   },
   {
-    caption:
-      'Layer 4 backward begins. First, all-gather W₄ — we need the full W to compute ∂W₄ and the upstream ∂X. (If the forward cached it, this AG may be skipped.)',
-    layerLabel: 'AG W₄',
+    caption: 'All-gather W so the layer can run backward.',
     wMat: false,
-    yShown: true,
     gShown: false,
     gMode: 'absent',
     commActive: true,
-    commLabel: 'AG W₄',
-    commCount: 1,
+    commLabel: 'AG W',
   },
   {
-    caption:
-      'W₄ materialized (yellow). Compute backward L4: each chip produces ∂W₄ at FULL shape from its batch slice. The chips disagree on values — that\'s why we reduce-scatter next.',
-    layerLabel: 'W₄',
+    caption: 'W is materialized. Each chip computes ∂W at full shape from its batch slice.',
     wMat: true,
-    yShown: true,
     gShown: true,
     gMode: 'full',
     commActive: false,
     commLabel: null,
-    commCount: 1,
   },
   {
-    caption:
-      "Reduce-scatter ∂W₄: chip 0 keeps row 0, chip 1 keeps row 1 — the gradient ends up FSDP-sharded, matching W's storage. Layer 3's AG can overlap here.",
-    layerLabel: 'RS ∂W₄ · AG W₃',
+    caption: 'Reduce-scatter ∂W back to the FSDP shard layout — the mirror of forward’s all-gather.',
     wMat: false,
-    yShown: true,
-    gShown: true,
-    gMode: 'rs-inflight',
-    commActive: true,
-    commLabel: 'RS ∂W₄ + AG W₃',
-    commCount: 3,
-  },
-  {
-    caption:
-      "Layer 3 backward computes ∂W₃; meanwhile RS ∂W₃ overlaps with AG W₂ for layer 2. Same pipeline as forward, just in reverse and with RS replacing the role of AG.",
-    layerLabel: 'W₃ · RS ∂W₃ · AG W₂',
-    wMat: true,
-    yShown: true,
     gShown: true,
     gMode: 'sharded',
     commActive: true,
-    commLabel: 'RS ∂W₃ + AG W₂',
-    commCount: 5,
-  },
-  {
-    caption:
-      "Layer 2 backward computes ∂W₂; RS ∂W₂ overlaps with AG W₁. The middle of the staircase looks the same on every layer.",
-    layerLabel: 'W₂ · RS ∂W₂ · AG W₁',
-    wMat: true,
-    yShown: true,
-    gShown: true,
-    gMode: 'sharded',
-    commActive: true,
-    commLabel: 'RS ∂W₂ + AG W₁',
-    commCount: 7,
-  },
-  {
-    caption:
-      'Final layer: ∂W₁ is computed and reduce-scattered. Nothing left to prefetch — the tail of the staircase runs alone.',
-    layerLabel: 'all sharded',
-    wMat: false,
-    yShown: true,
-    gShown: true,
-    gMode: 'sharded',
-    commActive: true,
-    commLabel: 'RS ∂W₁',
-    commCount: 8,
-  },
-  {
-    caption:
-      "Backward complete. Every gradient lives in the same shape as its parameter — one row per chip. The optimizer can step W without ever holding the whole tensor on one device. That's the FSDP invariant, preserved.",
-    layerLabel: 'done',
-    wMat: false,
-    yShown: true,
-    gShown: true,
-    gMode: 'sharded',
-    commActive: false,
-    commLabel: null,
-    commCount: 8,
+    commLabel: 'RS ∂W',
   },
 ];
 
@@ -141,19 +77,12 @@ function ChipMatmul({ chipIdx, step }) {
     return ownsWRow(chipIdx, r) ? { fill: chipColor } : { fill: ABSENT };
   };
 
-  const yFill = (r) => {
-    if (!s.yShown) return { fill: ABSENT };
-    return ownsBatchRow(chipIdx, r) ? { fill: chipColor } : { fill: ABSENT };
-  };
+  const yFill = (r) =>
+    ownsBatchRow(chipIdx, r) ? { fill: chipColor } : { fill: ABSENT };
 
   const gFill = (r) => {
     if (!s.gShown) return { fill: ABSENT };
     if (s.gMode === 'full') return { fill: chipColor, stripe: true };
-    if (s.gMode === 'rs-inflight') {
-      return ownsWRow(chipIdx, r)
-        ? { fill: chipColor }
-        : { fill: chipColor, stripe: true };
-    }
     if (s.gMode === 'sharded') {
       return ownsWRow(chipIdx, r) ? { fill: chipColor } : { fill: ABSENT };
     }
@@ -162,9 +91,7 @@ function ChipMatmul({ chipIdx, step }) {
 
   const gSubtitle =
     s.gMode === 'full'
-      ? 'full ∂W'
-      : s.gMode === 'rs-inflight'
-      ? 'mid-RS'
+      ? 'full · partial sum'
       : s.gMode === 'sharded'
       ? 'FSDP-sharded'
       : null;
@@ -196,14 +123,7 @@ function ChipMatmul({ chipIdx, step }) {
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 3 }}>
         <TensorGrid name="X" rows={B} cols={E} getFill={xFill} containerHeight={containerHeight} />
         <OpSymbol containerHeight={containerHeight}>@</OpSymbol>
-        <TensorGrid
-          name="W"
-          subtitle={s.layerLabel}
-          rows={E}
-          cols={E}
-          getFill={wFill}
-          containerHeight={containerHeight}
-        />
+        <TensorGrid name="W" rows={E} cols={E} getFill={wFill} containerHeight={containerHeight} />
         <OpSymbol containerHeight={containerHeight}>=</OpSymbol>
         <TensorGrid name="Y" rows={B} cols={E} getFill={yFill} containerHeight={containerHeight} />
         {s.gShown && (
@@ -259,43 +179,20 @@ function CommLink({ active, label }) {
   );
 }
 
-function Counter({ step }) {
-  const s = STEPS[step];
-  return (
-    <div
-      style={{
-        display: 'flex',
-        gap: 12,
-        justifyContent: 'center',
-        alignItems: 'center',
-        fontSize: 12,
-        fontFamily: 'ui-monospace, SFMono-Regular, monospace',
-      }}
-    >
-      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: INK }}>
-        <span style={{ display: 'inline-block', width: 10, height: 3, background: YELLOW, borderRadius: 2 }} />
-        collectives:
-        <strong style={{ color: YELLOW, minWidth: 14, textAlign: 'right' }}>{s.commCount}×</strong>
-      </span>
-    </div>
-  );
-}
-
 export default function FsdpBackward() {
   const [step, setStep] = useState(0);
   const s = STEPS[step];
 
   return (
     <WidgetShell
-      title="FSDP backward — per-layer reduce-scatter, mirror of the forward gather"
-      subtitle="Backward walks the layers in reverse. Each layer: gather W (if not cached), compute ∂W full-shape, then reduce-scatter to the FSDP storage layout. The next layer's AG can overlap with the current RS."
+      title="FSDP backward — reduce-scatter in place of forward's all-gather"
+      subtitle="One layer, end-to-end. Same chip-pair mirror as DP backward above; per-layer pipelining matches the forward FSDP overlap."
     >
       <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 4 }}>
         <ChipMatmul chipIdx={0} step={step} />
         <CommLink active={s.commActive} label={s.commLabel} />
         <ChipMatmul chipIdx={1} step={step} />
       </div>
-      <Counter step={step} />
       <Caption>{s.caption}</Caption>
       <StepControls step={step} totalSteps={STEPS.length} setStep={setStep} />
     </WidgetShell>

@@ -124,19 +124,60 @@ function ChipsGrid({ slotsFn, step }) {
   );
 }
 
-// ===== All-gather (2 steps) =====
+// ===== All-gather (4 steps: ring algorithm rounds) =====
+//
+// Schedule (clockwise ring): in round k (1..N-1), chip i forwards the slot it
+// received in round k-1 (or its own slot, in round 1) to chip (i+1) mod N.
+// Concretely, in round k chip i sends slot (i - k + 1) mod N to chip (i+1) mod N.
+// Senders keep their copies — AG is pure data movement, no reduction — so the
+// number of populated slots per chip grows by one each round.
+// After N - 1 = 3 rounds, every chip holds every slot.
+const AG_STATES = [
+  // Step 0 — initial. Each chip i has only slot i (its own color).
+  [
+    [0, null, null, null],
+    [null, 1, null, null],
+    [null, null, 2, null],
+    [null, null, null, 3],
+  ],
+  // Step 1 — round 1: chip i sends slot i to chip (i+1) mod N. Sender keeps it.
+  [
+    [0, null, null, 3],
+    [0, 1, null, null],
+    [null, 1, 2, null],
+    [null, null, 2, 3],
+  ],
+  // Step 2 — round 2: chip i forwards the slot it just received.
+  [
+    [0, null, 2, 3],
+    [0, 1, null, 3],
+    [0, 1, 2, null],
+    [null, 1, 2, 3],
+  ],
+  // Step 3 — round 3 (final): every chip holds every slot.
+  [
+    [0, 1, 2, 3],
+    [0, 1, 2, 3],
+    [0, 1, 2, 3],
+    [0, 1, 2, 3],
+  ],
+];
 function agSlots(chipIdx, step) {
-  if (step === 0) {
-    return Array.from({ length: NUM_CHIPS }, (_, i) =>
-      i === chipIdx ? { kind: 'solid', color: CHIP_COLORS[chipIdx] } : { kind: 'absent' }
-    );
-  }
-  return Array.from({ length: NUM_CHIPS }, (_, i) => ({ kind: 'solid', color: CHIP_COLORS[i] }));
+  return AG_STATES[step][chipIdx].map((sourceIdx) =>
+    sourceIdx === null
+      ? { kind: 'absent' }
+      : { kind: 'solid', color: CHIP_COLORS[sourceIdx] }
+  );
 }
-const agCaption = (step) =>
-  step === 0
-    ? 'Each chip starts owning one slot of the data — its own (chip i has slot i, in its own color). The other slots are empty.'
-    : 'After AG, every chip has every chip\'s slot. Each chip\'s rectangle is now a rainbow of all four sources. No arithmetic — just exchange.';
+const agCaption = (step) => {
+  const captions = [
+    'Start: each chip owns exactly one slot — its own (chip i has slot i, in its own color). The other three slots are empty (gray).',
+    'Round 1: each chip sends its own slot clockwise to its right neighbor. The sender keeps its copy (AG is data movement, not reduction), so every chip now holds 2 slots.',
+    'Round 2: each chip forwards the slot it just received one more hop clockwise. Every chip now holds 3 slots.',
+    'Round 3: one final hop closes the loop. Every chip\'s rectangle is now a rainbow of all four sources — AG complete in N − 1 = 3 rounds.',
+  ];
+  return captions[step];
+};
 
 // ===== Reduce-scatter (4 steps: ring algorithm rounds) =====
 //
@@ -461,9 +502,9 @@ export default function CollectivePrimer() {
 
       <CollectivePanel
         id="collective-all-gather"
-        title="All-gather"
-        description="Each chip starts owning one slot (its own color). After AG, every chip's rectangle is filled with all four sources."
-        totalSteps={2}
+        title="All-gather (ring algorithm)"
+        description="Each chip starts owning one slot (its own color). At each round, every chip sends a slot one hop clockwise; senders keep their copy, so the number of populated slots per chip grows by one each round. After 3 rounds every rectangle is a rainbow of all four sources."
+        totalSteps={4}
         slotsFn={agSlots}
         captionFn={agCaption}
       />
@@ -486,7 +527,7 @@ export default function CollectivePrimer() {
       <CollectivePanel
         id="collective-all-to-all"
         title="All-to-all (pairwise swap schedule)"
-        description="Every chip starts with its rectangle fully its own color (everything originated here). At each round, pairs of chips swap one piece each, flipping that unit to the partner's color. After 3 rounds, every rectangle is a rainbow — same total amount of data, just rearranged."
+        description="All-to-all transposes the sharding axis: each chip starts holding one shard of dim A split across destinations along dim B, and ends holding one shard of dim B with contributions from every source along dim A. Concretely below, every chip starts with its rectangle fully its own color (everything originated here, sliced by destination). At each round, pairs of chips swap one piece each."
         totalSteps={4}
         slotsFn={a2aSlots}
         captionFn={a2aCaption}

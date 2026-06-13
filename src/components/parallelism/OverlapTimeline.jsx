@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { WidgetShell, StepControls, Caption } from './staircase-shared.jsx';
 
 const LAYER_COLORS = ['#2563eb', '#7c3aed', '#ea580c', '#059669'];
 const INK = '#1f2937';
@@ -15,19 +16,48 @@ const SCHEMAS = {
       { id: 'comm', label: 'all-reduce' },
     ],
     duration: 22,
+    stepped: true,
     modes: {
       default: {
         compute: [
-          { idx: 3, start: 0, dur: 4, op: 'bwd', tag: 'L4' },
-          { idx: 2, start: 4, dur: 4, op: 'bwd', tag: 'L3' },
-          { idx: 1, start: 8, dur: 4, op: 'bwd', tag: 'L2' },
-          { idx: 0, start: 12, dur: 4, op: 'bwd', tag: 'L1' },
+          { idx: 3, start: 0, dur: 4, op: '', tag: '∂W4', label: '∂Y3, ∂W4' },
+          { idx: 2, start: 4, dur: 4, op: '', tag: '∂W3', label: '∂Y2, ∂W3' },
+          { idx: 1, start: 8, dur: 4, op: '', tag: '∂W2', label: '∂Y1, ∂W2' },
+          { idx: 0, start: 12, dur: 4, op: '', tag: '∂W1', label: '∂W1' },
         ],
         comm: [
-          { idx: 3, start: 4, dur: 3, op: 'AR', tag: 'g4' },
-          { idx: 2, start: 8, dur: 3, op: 'AR', tag: 'g3' },
-          { idx: 1, start: 12, dur: 3, op: 'AR', tag: 'g2' },
-          { idx: 0, start: 16, dur: 3, op: 'AR', tag: 'g1' },
+          { idx: 3, start: 4, dur: 3, op: 'AR', tag: '∂W4' },
+          { idx: 2, start: 8, dur: 3, op: 'AR', tag: '∂W3' },
+          { idx: 1, start: 12, dur: 3, op: 'AR', tag: '∂W2' },
+          { idx: 0, start: 16, dur: 3, op: 'AR', tag: '∂W1' },
+        ],
+        steps: [
+          {
+            caption: 'Backward pass about to start; no gradients yet.',
+            computeTags: [],
+            commTags: [],
+          },
+          {
+            caption: 'Layer 4 backward produces ∂Y3 (feeds layer 3) and ∂W4; ∂W4’s all-reduce starts.',
+            computeTags: ['∂W4'],
+            commTags: ['∂W4'],
+          },
+          {
+            caption: "Layer 3 backward produces ∂Y2 and ∂W3 while ∂W4's all-reduce is still in flight — the first overlap.",
+            computeTags: ['∂W4', '∂W3'],
+            commTags: ['∂W4', '∂W3'],
+          },
+          {
+            caption: "Layer 2 backward produces ∂Y1 and ∂W2 while ∂W3's all-reduce overlaps it.",
+            computeTags: ['∂W4', '∂W3', '∂W2'],
+            commTags: ['∂W4', '∂W3', '∂W2'],
+          },
+          {
+            caption:
+              'Layer 1 backward produces ∂W1; every ∂W all-reduce hides behind the next layer’s backward — the full staircase.',
+            computeTags: ['∂W4', '∂W3', '∂W2', '∂W1'],
+            commTags: ['∂W4', '∂W3', '∂W2', '∂W1'],
+          },
         ],
       },
     },
@@ -42,22 +72,8 @@ const SCHEMAS = {
     ],
     duration: 20,
     toggleable: true,
+    initialMode: 'naive',
     modes: {
-      overlapped: {
-        label: 'Overlapped',
-        compute: [
-          { idx: 0, start: 4, dur: 4, op: 'matmul', tag: 'L1' },
-          { idx: 1, start: 8, dur: 4, op: 'matmul', tag: 'L2' },
-          { idx: 2, start: 12, dur: 4, op: 'matmul', tag: 'L3' },
-          { idx: 3, start: 16, dur: 4, op: 'matmul', tag: 'L4' },
-        ],
-        comm: [
-          { idx: 0, start: 0, dur: 4, op: 'AG', tag: 'W1' },
-          { idx: 1, start: 4, dur: 4, op: 'AG', tag: 'W2' },
-          { idx: 2, start: 8, dur: 4, op: 'AG', tag: 'W3' },
-          { idx: 3, start: 12, dur: 4, op: 'AG', tag: 'W4' },
-        ],
-      },
       naive: {
         label: 'Naive (non-overlapped)',
         duration: 32,
@@ -73,6 +89,83 @@ const SCHEMAS = {
           { idx: 1, start: 8, dur: 4, op: 'AG', tag: 'W2' },
           { idx: 2, start: 16, dur: 4, op: 'AG', tag: 'W3' },
           { idx: 3, start: 24, dur: 4, op: 'AG', tag: 'W4' },
+        ],
+      },
+      overlapped: {
+        label: 'Overlapped',
+        compute: [
+          { idx: 0, start: 4, dur: 4, op: 'matmul', tag: 'L1' },
+          { idx: 1, start: 8, dur: 4, op: 'matmul', tag: 'L2' },
+          { idx: 2, start: 12, dur: 4, op: 'matmul', tag: 'L3' },
+          { idx: 3, start: 16, dur: 4, op: 'matmul', tag: 'L4' },
+        ],
+        comm: [
+          { idx: 0, start: 0, dur: 4, op: 'AG', tag: 'W1' },
+          { idx: 1, start: 4, dur: 4, op: 'AG', tag: 'W2' },
+          { idx: 2, start: 8, dur: 4, op: 'AG', tag: 'W3' },
+          { idx: 3, start: 12, dur: 4, op: 'AG', tag: 'W4' },
+        ],
+      },
+    },
+  },
+  'fsdp-bwd': {
+    title: 'FSDP — Backward Pass Overlap',
+    blurb:
+      "The mirror of forward FSDP, walked in reverse. Per layer: all-gather W, compute ∂W at full shape, reduce-scatter ∂W. The next layer's AG W overlaps the current layer's RS ∂W — the same pipeline, with AG↔RS swapped.",
+    lanes: [
+      { id: 'compute', label: 'compute' },
+      { id: 'comm', label: 'communication' },
+    ],
+    duration: 27,
+    stepped: true,
+    modes: {
+      default: {
+        compute: [
+          { idx: 3, start: 3, dur: 3, op: '', tag: 'L4', label: 'L4 backward' },
+          { idx: 2, start: 9, dur: 3, op: '', tag: 'L3', label: 'L3 backward' },
+          { idx: 1, start: 15, dur: 3, op: '', tag: 'L2', label: 'L2 backward' },
+          { idx: 0, start: 21, dur: 3, op: '', tag: 'L1', label: 'L1 backward' },
+        ],
+        comm: [
+          { idx: 3, start: 0, dur: 3, op: 'AG', tag: 'W4' },
+          { idx: 3, start: 6, dur: 3, op: 'RS', tag: '∂W4' },
+          { idx: 2, start: 6, dur: 3, op: 'AG', tag: 'W3' },
+          { idx: 2, start: 12, dur: 3, op: 'RS', tag: '∂W3' },
+          { idx: 1, start: 12, dur: 3, op: 'AG', tag: 'W2' },
+          { idx: 1, start: 18, dur: 3, op: 'RS', tag: '∂W2' },
+          { idx: 0, start: 18, dur: 3, op: 'AG', tag: 'W1' },
+          { idx: 0, start: 24, dur: 3, op: 'RS', tag: '∂W1' },
+        ],
+        steps: [
+          {
+            caption: 'Forward complete; backward about to start — no gradients yet.',
+            computeTags: [],
+            commTags: [],
+          },
+          {
+            caption:
+              'Layer 4 backward: all-gather W₄, compute ∂W₄ at full shape, reduce-scatter ∂W₄ back to the FSDP shard layout.',
+            computeTags: ['L4'],
+            commTags: ['W4', '∂W4'],
+          },
+          {
+            caption:
+              "Layer 3 starts: AG W₃ overlaps RS ∂W₄ finishing — the first inter-layer overlap, the mirror of forward FSDP's pipeline.",
+            computeTags: ['L4', 'L3'],
+            commTags: ['W4', '∂W4', 'W3', '∂W3'],
+          },
+          {
+            caption:
+              "Layer 2 follows the same pattern: AG W₂ overlaps RS ∂W₃ while L2's backward compute runs.",
+            computeTags: ['L4', 'L3', 'L2'],
+            commTags: ['W4', '∂W4', 'W3', '∂W3', 'W2', '∂W2'],
+          },
+          {
+            caption:
+              "Layer 1 closes the staircase; every layer's AG and RS hide under the next layer's backwards compute.",
+            computeTags: ['L4', 'L3', 'L2', 'L1'],
+            commTags: ['W4', '∂W4', 'W3', '∂W3', 'W2', '∂W2', 'W1', '∂W1'],
+          },
         ],
       },
     },
@@ -147,7 +240,7 @@ function Block({ block, x, y, width }) {
           fill={comm ? color : '#ffffff'}
           fontWeight={600}
         >
-          {`${block.op} ${block.tag}`}
+          {block.label ?? [block.op, block.tag].filter(Boolean).join(' ')}
         </text>
       )}
     </g>
@@ -198,10 +291,149 @@ function modeButtonStyle(active) {
   };
 }
 
+function TimelineSvg({ schema, lanesData, width, innerWidth, height, scale }) {
+  return (
+    <svg
+      viewBox={`0 0 ${width} ${height}`}
+      width="100%"
+      style={{ display: 'block', overflow: 'visible' }}
+      role="img"
+      aria-label={`${schema.title} timeline`}
+    >
+      <line
+        x1={PAD_LEFT}
+        y1={PAD_TOP - 12}
+        x2={PAD_LEFT + innerWidth}
+        y2={PAD_TOP - 12}
+        stroke="rgba(31, 41, 55, 0.18)"
+        strokeWidth={1}
+      />
+      <text
+        x={PAD_LEFT + innerWidth}
+        y={PAD_TOP - 18}
+        textAnchor="end"
+        fontSize={10}
+        fill={INK_SOFT}
+        fontFamily="system-ui, -apple-system, sans-serif"
+      >
+        time →
+      </text>
+
+      {schema.lanes.map((lane, i) => {
+        const y = PAD_TOP + i * (LANE_HEIGHT + LANE_GAP) + (LANE_HEIGHT - BLOCK_HEIGHT) / 2;
+        return (
+          <Lane
+            key={lane.id}
+            label={lane.label}
+            blocks={lanesData[lane.id] ?? []}
+            y={y}
+            scale={scale}
+          />
+        );
+      })}
+    </svg>
+  );
+}
+
+function Legend() {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        gap: 18,
+        justifyContent: 'center',
+        fontSize: 11,
+        color: INK_SOFT,
+        flexWrap: 'wrap',
+        fontFamily: 'system-ui, -apple-system, sans-serif',
+      }}
+    >
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+        <span
+          style={{
+            display: 'inline-block',
+            width: 16,
+            height: 10,
+            background: LAYER_COLORS[0],
+            borderRadius: 2,
+          }}
+        />
+        compute
+      </span>
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+        <span
+          style={{
+            display: 'inline-block',
+            width: 16,
+            height: 10,
+            background: 'transparent',
+            border: `1.5px dashed ${LAYER_COLORS[0]}`,
+            borderRadius: 2,
+          }}
+        />
+        communication
+      </span>
+    </div>
+  );
+}
+
+function SteppedTimeline({ schema, width }) {
+  const active = schema.modes.default;
+  const steps = active.steps;
+  const [step, setStep] = useState(0);
+  const frame = steps[step];
+
+  const duration = active.duration ?? schema.duration;
+  const numLanes = schema.lanes.length;
+  const height =
+    PAD_TOP + numLanes * LANE_HEIGHT + (numLanes - 1) * LANE_GAP + PAD_BOTTOM;
+  const innerWidth = width - PAD_LEFT - PAD_RIGHT;
+  const scale = innerWidth / duration;
+
+  const computeTags = new Set(frame.computeTags);
+  const commTags = new Set(frame.commTags);
+  const lanesData = {
+    compute: (active.compute ?? []).filter((b) => computeTags.has(b.tag)),
+    comm: (active.comm ?? []).filter((b) => commTags.has(b.tag)),
+  };
+
+  return (
+    <WidgetShell title={schema.title} subtitle={schema.blurb}>
+      <TimelineSvg
+        schema={schema}
+        lanesData={lanesData}
+        width={width}
+        innerWidth={innerWidth}
+        height={height}
+        scale={scale}
+      />
+      <Caption>{frame.caption}</Caption>
+      <StepControls step={step} totalSteps={steps.length} setStep={setStep} />
+      <Legend />
+    </WidgetShell>
+  );
+}
+
+// Supported strategies: 'dp' (stepped), 'fsdp' (static, naive/overlapped toggle),
+// 'fsdp-bwd' (stepped), 'tp' (static).
 export default function OverlapTimeline({ strategy = 'fsdp', width = 760 }) {
   const schema = SCHEMAS[strategy] ?? SCHEMAS.fsdp;
+
+  if (schema.stepped) {
+    return <SteppedTimeline schema={schema} width={width} />;
+  }
+
+  return <StaticTimeline schema={schema} width={width} />;
+}
+
+function StaticTimeline({ schema, width }) {
   const modeKeys = Object.keys(schema.modes);
-  const initialMode = modeKeys.includes('overlapped') ? 'overlapped' : modeKeys[0];
+  const initialMode =
+    schema.initialMode && modeKeys.includes(schema.initialMode)
+      ? schema.initialMode
+      : modeKeys.includes('overlapped')
+      ? 'overlapped'
+      : modeKeys[0];
   const [mode, setMode] = useState(initialMode);
 
   const active = schema.modes[mode];
@@ -251,45 +483,14 @@ export default function OverlapTimeline({ strategy = 'fsdp', width = 760 }) {
         </div>
       )}
 
-      <svg
-        viewBox={`0 0 ${width} ${height}`}
-        width="100%"
-        style={{ display: 'block', overflow: 'visible' }}
-        role="img"
-        aria-label={`${schema.title} timeline`}
-      >
-        <line
-          x1={PAD_LEFT}
-          y1={PAD_TOP - 12}
-          x2={PAD_LEFT + innerWidth}
-          y2={PAD_TOP - 12}
-          stroke="rgba(31, 41, 55, 0.18)"
-          strokeWidth={1}
-        />
-        <text
-          x={PAD_LEFT + innerWidth}
-          y={PAD_TOP - 18}
-          textAnchor="end"
-          fontSize={10}
-          fill={INK_SOFT}
-          fontFamily="system-ui, -apple-system, sans-serif"
-        >
-          time →
-        </text>
-
-        {schema.lanes.map((lane, i) => {
-          const y = PAD_TOP + i * (LANE_HEIGHT + LANE_GAP) + (LANE_HEIGHT - BLOCK_HEIGHT) / 2;
-          return (
-            <Lane
-              key={lane.id}
-              label={lane.label}
-              blocks={active[lane.id] ?? []}
-              y={y}
-              scale={scale}
-            />
-          );
-        })}
-      </svg>
+      <TimelineSvg
+        schema={schema}
+        lanesData={active}
+        width={width}
+        innerWidth={innerWidth}
+        height={height}
+        scale={scale}
+      />
 
       {active.warn && (
         <div
@@ -307,43 +508,7 @@ export default function OverlapTimeline({ strategy = 'fsdp', width = 760 }) {
         </div>
       )}
 
-      <div
-        style={{
-          display: 'flex',
-          gap: 18,
-          justifyContent: 'center',
-          fontSize: 11,
-          color: INK_SOFT,
-          flexWrap: 'wrap',
-          fontFamily: 'system-ui, -apple-system, sans-serif',
-        }}
-      >
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-          <span
-            style={{
-              display: 'inline-block',
-              width: 16,
-              height: 10,
-              background: LAYER_COLORS[0],
-              borderRadius: 2,
-            }}
-          />
-          compute
-        </span>
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-          <span
-            style={{
-              display: 'inline-block',
-              width: 16,
-              height: 10,
-              background: 'transparent',
-              border: `1.5px dashed ${LAYER_COLORS[0]}`,
-              borderRadius: 2,
-            }}
-          />
-          communication
-        </span>
-      </div>
+      <Legend />
     </div>
   );
 }

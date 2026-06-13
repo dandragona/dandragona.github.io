@@ -1,6 +1,9 @@
 // Shared primitives for the backward-pass staircase components.
-// The forward components (ShardingStage, TpStaircase, FsdpTpStaircase) have their
-// own inline primitives — kept separate to avoid risk of regression.
+// Step-driven consumers: DpBackward, FsdpBackward, TpBackward, CpBackward,
+// EpBackward, CpStaircase, EpRouting, and the DP and FSDP-backward variants of
+// OverlapTimeline (gated on SCHEMAS.<key>.stepped).
+// The forward matmul components (ShardingStage, TpStaircase) have their own
+// inline primitives — kept separate to avoid risk of regression.
 
 export const CHIP_COLORS = ['#2563eb', '#059669', '#7c3aed', '#ea580c'];
 export const YELLOW = '#eab308';

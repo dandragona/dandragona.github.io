@@ -30,59 +30,24 @@ const STRATEGIES = {
       "One shared X, sliced along the contraction dimension E. W's rows are partitioned to match. Each chip computes a full-shape partial sum of Y.",
     supportsReduce: true,
   },
-  fsdp_tp: {
-    label: 'FSDP + TP (2×2 mesh)',
+  cp: {
+    label: 'Context Parallelism',
     blurb:
-      "Two-axis mesh: W's rows split along BOTH axes; X's batch split along FSDP; X's contraction split along TP. Forward: AG on FSDP to gather W, then matmul, then RS on TP to reduce the partial-sum output.",
-    supportsMaterialize: true,
-    supportsReduce: true,
+      'Shard the sequence across chips. For the dense layer this is just DP — W is replicated and no communication is needed; attention is where CP pays.',
+    supportsMaterialize: false,
   },
 };
 
 function ownsBatchRow(strategy, chipIdx, numChips, B, row) {
-  if (strategy === 'dp' || strategy === 'fsdp') {
+  if (strategy === 'dp' || strategy === 'fsdp' || strategy === 'cp') {
     const rowsPerChip = B / numChips;
     return Math.floor(row / rowsPerChip) === chipIdx;
-  }
-  if (strategy === 'fsdp_tp') {
-    const fsdpRank = Math.floor(chipIdx / 2);
-    const rowsPerFsdp = B / 2;
-    return Math.floor(row / rowsPerFsdp) === fsdpRank;
   }
   return false;
 }
 
 function ownsWRow(strategy, chipIdx, row) {
   if (strategy === 'fsdp' || strategy === 'tp') return row === chipIdx;
-  if (strategy === 'fsdp_tp') {
-    // TP-outer indexing: rows split first by TP rank (rows {0,1} = TP 0,
-    // rows {2,3} = TP 1), then by FSDP rank within each TP block.
-    // This makes the post-AG view contiguous — each TP rank gets a
-    // contiguous half of W's rows.
-    const fsdpRank = Math.floor(chipIdx / 2);
-    const tpRank = chipIdx % 2;
-    return row === 2 * tpRank + fsdpRank;
-  }
-  return false;
-}
-
-function ownsContractionCol(strategy, chipIdx, E, col) {
-  if (strategy === 'tp') return col === chipIdx;
-  if (strategy === 'fsdp_tp') {
-    const tpRank = chipIdx % 2;
-    const colsPerTp = E / 2;
-    return Math.floor(col / colsPerTp) === tpRank;
-  }
-  return false;
-}
-
-function ownsYOutputCol(strategy, chipIdx, E, col) {
-  if (strategy === 'tp') return col === chipIdx;
-  if (strategy === 'fsdp_tp') {
-    const tpRank = chipIdx % 2;
-    const colsPerTp = E / 2;
-    return Math.floor(col / colsPerTp) === tpRank;
-  }
   return false;
 }
 
@@ -160,30 +125,14 @@ function getFills({ strategy, chipIdx, numChips, B, E, materialized, reduced }) 
     if (strategy === 'tp') {
       return c === chipIdx ? { fill: chipColor } : { fill: ABSENT };
     }
-    if (strategy === 'fsdp_tp') {
-      const ownsR = ownsBatchRow(strategy, chipIdx, numChips, B, r);
-      const ownsC = ownsContractionCol(strategy, chipIdx, E, c);
-      return ownsR && ownsC ? { fill: chipColor } : { fill: ABSENT };
-    }
     return ownsBatchRow(strategy, chipIdx, numChips, B, r)
       ? { fill: chipColor }
       : { fill: ABSENT };
   };
 
   const wFill = (r) => {
-    if (strategy === 'fsdp_tp') {
-      if (materialized) {
-        // After AG of W along the FSDP axis, each TP rank pools its FSDP shards
-        // into a contiguous half of W's rows. tpRank 0 → rows {0,1}, tpRank 1 → rows {2,3}.
-        const tpRank = chipIdx % 2;
-        return Math.floor(r / 2) === tpRank ? { fill: YELLOW } : { fill: ABSENT };
-      }
-      return ownsWRow(strategy, chipIdx, r)
-        ? { fill: chipColor }
-        : { fill: ABSENT };
-    }
     if (materialized) return { fill: YELLOW };
-    if (strategy === 'dp') return { fill: YELLOW };
+    if (strategy === 'dp' || strategy === 'cp') return { fill: YELLOW };
     return ownsWRow(strategy, chipIdx, r)
       ? { fill: chipColor }
       : { fill: ABSENT };
@@ -194,19 +143,6 @@ function getFills({ strategy, chipIdx, numChips, B, E, materialized, reduced }) 
       if (reduced) {
         return c === chipIdx ? { fill: chipColor } : { fill: ABSENT };
       }
-      return { fill: chipColor, stripe: true };
-    }
-    if (strategy === 'fsdp_tp') {
-      // Y is empty until W has been gathered (matmul can't run otherwise).
-      if (!materialized) return { fill: ABSENT };
-      const ownsR = ownsBatchRow(strategy, chipIdx, numChips, B, r);
-      if (!ownsR) return { fill: ABSENT };
-      if (reduced) {
-        return ownsYOutputCol(strategy, chipIdx, E, c)
-          ? { fill: chipColor }
-          : { fill: ABSENT };
-      }
-      // Post-matmul, pre-RS: partial sum at full output shape.
       return { fill: chipColor, stripe: true };
     }
     if (strategy === 'fsdp' && !materialized) {
