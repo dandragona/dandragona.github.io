@@ -31,8 +31,8 @@
 
 ## 6. Ship & confirm
 
-- [ ] 6.1 Commit `package.json`, `package-lock.json`, and any `astro.config.mjs`/component fixes
-- [ ] 6.2 Push and open/merge to `main`; confirm the `deploy.yml` workflow run is green (`npm ci` + `npm run build` + Pages deploy)
-- [ ] 6.3 Confirm the live site still serves all routes and islands after deploy
-- [ ] 6.4 Re-check Dependabot: open alert count is **0** (or only the documented residuals from 4.2 remain)
-- [ ] 6.5 Keep the prior lockfile recoverable for one-commit rollback (`git revert`) if CI or the live site regresses
+- [x] 6.1 Commit `package.json`, `package-lock.json`, and any `astro.config.mjs`/component fixes
+- [x] 6.2 Push and open/merge to `main`; confirm the `deploy.yml` workflow run is green (`npm ci` + `npm run build` + Pages deploy)
+- [x] 6.3 Confirm the live site still serves all routes and islands after deploy
+- [x] 6.4 Re-check Dependabot: open alert count is **0** (or only the documented residuals from 4.2 remain)
+- [x] 6.5 Keep the prior lockfile recoverable for one-commit rollback (`git revert`) if CI or the live site regresses
