@@ -39,17 +39,17 @@ Each forward-pass strategy section in `src/pages/blog/parallelism-roofline.mdx` 
 
 #### Scenario: DP section explains, not just states, its ratio
 - **WHEN** the reader finishes the DP forward subsection
-- **THEN** the passage explains that the forward pays no cross-device communication, that per-chip compute is $\sim B E^2 / P$ because the layer's $\sim 2 B E^2$ matmul is split across $P$ devices each holding $B/P$ rows, and that the once-per-step all-reduce of $\partial W$ is "closer to $E^2$" because $\partial W$ has $E \times E$ entries regardless of batch and so does not shrink as the batch is split
+- **THEN** the passage explains that the forward pays no cross-device communication, that per-chip compute is $\sim 2 B E^2 / P$ because the layer's $\sim 2 B E^2$ matmul is split across $P$ devices each holding $B/P$ rows, and that the once-per-step all-reduce of $\partial W$ is "closer to $E^2$" because $\partial W$ has $E \times E$ entries regardless of batch and so does not shrink as the batch is split
 - **AND** it concludes that the deciding ratio is $B / P$ — large enough keeps the matmul well above the collective
 - **AND** it cross-references the backward anchor `#dp--one-all-reduce-at-the-end` where natural
 
 #### Scenario: FSDP section explains its ratio
 - **WHEN** the reader finishes the FSDP forward subsection
-- **THEN** the passage explains that per-layer compute is $\sim B E^2 / P$ while the all-gather of $W$ moves $\sim E^2 / P$ (the chip's row-strip of the $E \times E$ weight), so the $P$ cancels and the deciding ratio simplifies to $B$ — larger per-chip batch buys room to hide the gather under the matmul
+- **THEN** the passage explains that per-layer compute is $\sim 2 B E^2 / P$ while the all-gather of $W$ moves $\sim E^2 / P$ (the chip's row-strip of the $E \times E$ weight), so the $P$ cancels and the deciding ratio scales as $B$ — larger per-chip batch buys room to hide the gather under the matmul
 
 #### Scenario: TP section explains its ratio
 - **WHEN** the reader finishes the TP forward subsection
-- **THEN** the passage explains that compute is $\sim B E^2 / P$ and the activation collective is $\sim B E$ (an output of $B \times E$, independent of $P$), so the deciding ratio is $E / P$ — larger $E$ hides communication and larger $P$ makes each local matmul thinner
+- **THEN** the passage explains that compute is $\sim 2 B E^2 / P$ and the activation collective is $\sim B E$ (an output of $B \times E$, independent of $P$), so the deciding ratio is $E / P$ — larger $E$ hides communication and larger $P$ makes each local matmul thinner
 
 #### Scenario: CP section explains its ratio
 - **WHEN** the reader finishes the CP forward subsection
