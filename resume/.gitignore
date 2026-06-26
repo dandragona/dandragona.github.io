@@ -1,0 +1,7 @@
+# Google Sans is Google's proprietary brand font — do NOT redistribute it from this
+# public repo. Keep the .ttf files local; the built PDF embeds only a subset (fine).
+# To build, place GoogleSans-{Regular,Medium,Bold,Italic}.ttf in fonts/.
+fonts/GoogleSans-*.ttf
+
+# Outfit (open look-alike, only used for an alternate build) — not needed here.
+fonts/Outfit.ttf
