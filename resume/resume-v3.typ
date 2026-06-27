@@ -17,7 +17,7 @@
 //  10. Post-Google content is Research (FermiLab + Publication) and Presentations.
 //
 // v3 changes:
-//   1. Added a Technical Skills section (Languages, Frameworks & Tools, Foundations),
+//   1. Added a Technical Skills section (Languages, Frameworks & Tools),
 //      placed directly under the header rule, above Experience.
 //   2. Trimmed Presentations to title — venue — date (dropped the one-line summaries)
 //      to reclaim the vertical space and hold a single page.
@@ -200,7 +200,6 @@
 
 #skillrow("Languages", ("Python", "C++", "Go", "C", "MATLAB", "SQL"))
 #skillrow("Frameworks & Tools", ("JAX", "Pallas", "XLA", "MaxText", "XProf", "Stim", "Qiskit"))
-#skillrow("Foundations", ("Linear algebra", "Statistics & probability", "Quantum mechanics", "Signal processing"))
 
 // =============================================================================
 // EXPERIENCE
