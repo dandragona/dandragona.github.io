@@ -1,5 +1,5 @@
 // =============================================================================
-// Daniel Mandragona — Résumé (v3 — adds Technical Skills)
+// Daniel Mandragona — Résumé (v2 — human-requested revisions)
 // Hand-authored Typst (no template package). Single-column, ATS-safe.
 // Headings: Helvetica Neue · Body: Charter · Single accent: Google Blue.
 // Contact icons: Font Awesome 6 (OTFs vendored in ./fonts — compile with --font-path fonts).
@@ -15,12 +15,6 @@
 //   8. Bullets compressed to fit a single printed line.
 //   9. Education moved to the very last position.
 //  10. Post-Google content is Research (FermiLab + Publication) and Presentations.
-//
-// v3 changes:
-//   1. Added a Technical Skills section (Languages, Frameworks & Tools),
-//      placed directly under the header rule, above Experience.
-//   2. Trimmed Presentations to title — venue — date (dropped the one-line summaries)
-//      to reclaim the vertical space and hold a single page.
 // =============================================================================
 
 #import "@preview/fontawesome:0.5.0": *   // contact icons
@@ -155,13 +149,6 @@
   datestamp(date),
 ))
 
-// A technical-skills row: bold category label, then a ·-separated list of items.
-#let skillrow(label, items) = block(below: 3pt, {
-  text(font: heading-font, weight: 700, size: 9.4pt, fill: orgink)[#label:]
-  h(5pt)
-  text(size: 9.4pt, fill: ink)[#items.join([#h(4pt)#text(fill: muted)[·]#h(4pt)])]
-})
-
 // =============================================================================
 // HEADER
 // =============================================================================
@@ -191,15 +178,6 @@
 
 #v(2pt)
 #line(length: 100%, stroke: 1.4pt + accent)
-
-// =============================================================================
-// TECHNICAL SKILLS
-// =============================================================================
-
-#section("Technical Skills")
-
-#skillrow("Languages", ("Python", "C++", "Go", "C", "MATLAB", "SQL"))
-#skillrow("Frameworks & Tools", ("JAX", "Pallas", "XLA", "MaxText", "XProf", "Stim", "Qiskit"))
 
 // =============================================================================
 // EXPERIENCE
@@ -271,8 +249,11 @@
 
 #section("Presentations")
 
-#let talk(title, venue, date, summary: none, url: none) = {
-  block(breakable: false, below: 4.5pt, {
+#let talk(title, venue, date, summary, url: none) = {
+  // below: gap BETWEEN talks (clear separation). par spacing: tight gap
+  // between a talk's title line and its own summary, so they read as a unit.
+  block(breakable: false, below: 8pt, {
+    set par(spacing: 2pt)
     lr(
       {
         let t = text(font: heading-font, weight: 700, size: 9.8pt, fill: accent)[#title]
@@ -281,40 +262,42 @@
       },
       datestamp(date),
     )
-    if summary != none {
-      v(1pt)
-      block(par(leading: 0.46em, text(size: 9.2pt)[#summary]))
-    }
+    block(par(leading: 0.46em, text(size: 9.2pt)[#summary]))
   })
 }
 
 #talk(
   "QEC: From Classical Errors to the Surface Code",
   "Quantum AI, Google", "Oct 2025",
+  [Classical and quantum error correction, from the Hamming code up to the surface code for QEC.],
   url: "https://dandragona.me/pdfs/qec_slides.pdf",
 )
 
 #talk(
   "Berry Phase & Chern Numbers",
   "Master's Presentation, TAMU", "Nov 2024",
+  [Gauge invariance and numerical computation of Berry phase and Chern numbers for topological systems.],
   url: "https://dandragona.me/pdfs/berry.pdf",
 )
 
 #talk(
   "Quantum Markov Chains",
   "Quantum Algorithms, CSCE 640 – TAMU", "Nov 2023",
+  [Szegedy's quantization of Markov chains and its quadratic speedup in mixing time over the classical walk.],
   url: "https://dandragona.me/pdfs/qmcmh.pdf",
 )
 
 #talk(
   "Weyl Quantization Lecture",
   "Topics in Physics for Mathematicians, MATH 689 – TAMU", "Dec 2023",
+  [Presented the mathematical theory for converting classical phase-space $L^2(bb(R)^(2n))$-observables to be self-adjoint operators on a quantum Hilbert space.],
   url: "https://dandragona.me/pdfs/weyl_quant.pdf",
 )
 
 #talk(
   "Visual Saliency Prediction",
   "Perception Research Showcase, Google", "Mar 2019",
+  [Presented the topic of image saliency and its motivations, and the ML infrastructure my team used for prediction and evaluation.],
 )
 
 // =============================================================================
