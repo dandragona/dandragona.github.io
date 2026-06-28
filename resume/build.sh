@@ -5,5 +5,5 @@
 # fonts in ./fonts (see README.md).
 set -euo pipefail
 cd "$(dirname "$0")"
-typst compile --font-path fonts resume-v2.typ ../public/pdfs/danielmandragona.pdf
+typst compile --font-path fonts resume-live.typ ../public/pdfs/danielmandragona.pdf
 echo "✓ built ../public/pdfs/danielmandragona.pdf"

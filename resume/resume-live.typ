@@ -203,7 +203,7 @@
   "Apr 2026 – Present",
   (
     [Delivered a 25% speedup on an FFT Pallas TPU kernel for a customer engagement.],
-    [Drove a 2× speedup on a large customer's model via tensor/sequence parallelism and custom TPU kernels.],
+    [Unlocked a 2× speedup on a large customer's model via kernel fusion and parallelism strategies to remove exposed comms.],
     [Microbenchmarked Splash Attention to isolate bottlenecks, yielding a further 10% speedup on an already-tuned kernel.],
     [Cut Wan 2.1 397B diffusion step time 25% via Unified Sequence Parallelism (Ring Attention + DeepSpeed-Ulysses).],
     [Ran roofline analysis of Qwen 3.5 on next-gen TPUs to isolate compute- vs. memory-bound regimes and prioritize fixes.],
@@ -239,7 +239,7 @@
   "2018 – 2019",
   (
     [Built a MapReduce ML pipeline (billions of points) for image-saliency prediction on a tuned ResNet U-Net.],
-    [Architected multimodal ML infrastructure for abuse detection in Google Play, decoupling feature generation from inference.],
+    [Developed multimodal ML infrastructure for abuse detection in Google Play, decoupling feature generation from inference.],
   ),
 )
 
