@@ -325,7 +325,7 @@ export default function TpStaircase() {
       }}
     >
       <div style={{ textAlign: 'center', fontSize: 13, color: INK }}>
-        <strong style={{ letterSpacing: '0.02em' }}>TP — Build the within-layer staircase</strong>
+        <strong style={{ letterSpacing: '0.02em' }}>TP (row-parallel) — Build the within-layer staircase</strong>
         <div style={{ fontSize: 12, color: INK_SOFT, marginTop: 6, lineHeight: 1.5 }}>
           Split the matmul into chunks along the batch dim. Step through the algorithm; the yellow
           ring marks the chunk being computed this tick, and the dashed block marks the chunk being

@@ -24,30 +24,41 @@ const STRATEGIES = {
       "Batch sharded as in DP, but W's rows are partitioned across chips. The full W is gathered just in time, used, and freed.",
     supportsMaterialize: true,
   },
-  tp: {
-    label: 'Tensor Parallelism (row-parallel)',
-    blurb:
-      "One shared X, sliced along the contraction dimension E. W's rows are partitioned to match. Each chip computes a full-shape partial sum of Y.",
-    supportsReduce: true,
-  },
   cp: {
     label: 'Context Parallelism',
     blurb:
-      'Shard the sequence across chips. For the dense layer this is just DP — W is replicated and no communication is needed; attention is where CP pays.',
+      'Each horizontal band is one chip\'s slice of the sequence — a real device shard, unlike TP\'s within-layer chunks. For the dense layer this is just DP: W is replicated and no communication is needed; attention is where CP pays.',
     supportsMaterialize: false,
+  },
+  'tp-col': {
+    label: 'Tensor Parallelism (column-parallel)',
+    blurb: 'X is replicated on every chip — nothing about the input is sharded. W is split by output columns; each chip computes a clean column slice of Y. Forward needs no collective if the next op consumes the slice; an all-gather rebuilds the full Y.',
+    supportsGather: true,
+  },
+  'tp-row': {
+    label: 'Tensor Parallelism (row-parallel)',
+    blurb: "X arrives already sliced along the contraction dimension E — in practice, as the column-parallel layer's output. W's rows are partitioned to match. Each chip computes a full-shape partial sum of Y; a reduce-scatter (or all-reduce) combines them.",
+    supportsReduce: true,
   },
 };
 
 function ownsBatchRow(strategy, chipIdx, numChips, B, row) {
-  if (strategy === 'dp' || strategy === 'fsdp' || strategy === 'cp') {
-    const rowsPerChip = B / numChips;
-    return Math.floor(row / rowsPerChip) === chipIdx;
-  }
+  if (strategy === 'dp' || strategy === 'fsdp' || strategy === 'cp')
+    return ownsContiguousShard(row, B, numChips, chipIdx);
   return false;
 }
 
-function ownsWRow(strategy, chipIdx, row) {
-  if (strategy === 'fsdp' || strategy === 'tp') return row === chipIdx;
+// True when `idx` falls in chip `chipIdx`'s contiguous shard of an axis of
+// length `total` split across `numChips`. Works for any total/numChips (not
+// just total === numChips): each chip owns a block of total/numChips entries.
+function ownsContiguousShard(idx, total, numChips, chipIdx) {
+  const per = total / numChips;
+  return Math.floor(idx / per) === chipIdx;
+}
+
+function ownsWRow(strategy, chipIdx, row, numChips, E) {
+  if (strategy === 'fsdp' || strategy === 'tp-row')
+    return ownsContiguousShard(row, E, numChips, chipIdx);
   return false;
 }
 
@@ -118,32 +129,50 @@ function OpSymbol({ children, containerHeight }) {
   );
 }
 
-function getFills({ strategy, chipIdx, numChips, B, E, materialized, reduced }) {
+function getFills({ strategy, chipIdx, numChips, B, E, materialized, reduced, gathered }) {
   const chipColor = CHIP_COLORS[chipIdx % CHIP_COLORS.length];
 
   const xFill = (r, c) => {
-    if (strategy === 'tp') {
-      return c === chipIdx ? { fill: chipColor } : { fill: ABSENT };
+    if (strategy === 'tp-row') {
+      return ownsContiguousShard(c, E, numChips, chipIdx)
+        ? { fill: chipColor }
+        : { fill: ABSENT };
     }
+    if (strategy === 'tp-col') return { fill: REPLICATED };
     return ownsBatchRow(strategy, chipIdx, numChips, B, r)
       ? { fill: chipColor }
       : { fill: ABSENT };
   };
 
-  const wFill = (r) => {
+  const wFill = (r, c) => {
     if (materialized) return { fill: YELLOW };
-    if (strategy === 'dp' || strategy === 'cp') return { fill: YELLOW };
-    return ownsWRow(strategy, chipIdx, r)
+    // DP and CP replicate W on every chip — gray, matching the legend's
+    // "replicated"; yellow is reserved for FSDP's just-in-time materialize.
+    if (strategy === 'dp' || strategy === 'cp') return { fill: REPLICATED };
+    if (strategy === 'tp-col') {
+      return ownsContiguousShard(c, E, numChips, chipIdx)
+        ? { fill: chipColor }
+        : { fill: ABSENT };
+    }
+    return ownsWRow(strategy, chipIdx, r, numChips, E)
       ? { fill: chipColor }
       : { fill: ABSENT };
   };
 
   const yFill = (r, c) => {
-    if (strategy === 'tp') {
+    if (strategy === 'tp-row') {
       if (reduced) {
-        return c === chipIdx ? { fill: chipColor } : { fill: ABSENT };
+        return ownsContiguousShard(c, E, numChips, chipIdx)
+          ? { fill: chipColor }
+          : { fill: ABSENT };
       }
       return { fill: chipColor, stripe: true };
+    }
+    if (strategy === 'tp-col') {
+      if (gathered) return { fill: YELLOW };
+      return ownsContiguousShard(c, E, numChips, chipIdx)
+        ? { fill: chipColor }
+        : { fill: ABSENT };
     }
     if (strategy === 'fsdp' && !materialized) {
       return { fill: ABSENT };
@@ -156,7 +185,7 @@ function getFills({ strategy, chipIdx, numChips, B, E, materialized, reduced }) 
   return { xFill, wFill, yFill };
 }
 
-function Chip({ chipIdx, numChips, strategy, B, E, materialized, reduced }) {
+function Chip({ chipIdx, numChips, strategy, B, E, materialized, reduced, gathered }) {
   const { xFill, wFill, yFill } = getFills({
     strategy,
     chipIdx,
@@ -165,6 +194,7 @@ function Chip({ chipIdx, numChips, strategy, B, E, materialized, reduced }) {
     E,
     materialized,
     reduced,
+    gathered,
   });
   const maxRows = Math.max(B, E);
   const containerHeight = maxRows * CELL + (maxRows - 1) * GAP;
@@ -231,6 +261,7 @@ export default function ShardingStage({
 }) {
   const [materialized, setMaterialized] = useState(initialMaterialized);
   const [reduced, setReduced] = useState(false);
+  const [gathered, setGathered] = useState(false);
   const cfg = STRATEGIES[strategy] ?? STRATEGIES.dp;
 
   return (
@@ -263,6 +294,7 @@ export default function ShardingStage({
             E={E}
             materialized={materialized}
             reduced={reduced}
+            gathered={gathered}
           />
         ))}
       </div>
@@ -305,6 +337,27 @@ export default function ShardingStage({
             }}
           >
             {reduced ? 'Undo reduce-scatter' : 'Reduce-scatter Y'}
+          </button>
+        </div>
+      )}
+
+      {cfg.supportsGather && (
+        <div style={{ display: 'flex', justifyContent: 'center' }}>
+          <button
+            onClick={() => setGathered((v) => !v)}
+            style={{
+              padding: '8px 18px',
+              borderRadius: 8,
+              background: gathered ? YELLOW : 'rgba(255, 255, 255, 0.4)',
+              color: INK,
+              border: `1px solid ${CARD_BORDER}`,
+              fontSize: 13,
+              cursor: 'pointer',
+              fontWeight: 500,
+              transition: 'background 200ms ease',
+            }}
+          >
+            {gathered ? 'Undo all-gather' : 'All-gather Y'}
           </button>
         </div>
       )}

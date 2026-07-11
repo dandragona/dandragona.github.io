@@ -1,12 +1,19 @@
-// Shared primitives for the backward-pass staircase components.
-// Step-driven consumers: DpBackward, FsdpBackward, TpBackward, CpBackward,
-// EpBackward, CpStaircase, EpRouting, and the DP and FSDP-backward variants of
-// OverlapTimeline (gated on SCHEMAS.<key>.stepped).
+// Shared primitives for the step-driven parallelism widgets.
+// Consumers: DpBackward, FsdpBackward, TpBackward (backward passes);
+// RingAttention, UlyssesAttention, EpAllToAll, EpRing (CP/EP forward);
+// and the DP and FSDP-backward variants of OverlapTimeline (gated on
+// SCHEMAS.<key>.stepped).
 // The forward matmul components (ShardingStage, TpStaircase) have their own
 // inline primitives — kept separate to avoid risk of regression.
+//
+// Cell/TensorGrid take optional `highlight` (yellow "active this tick" ring)
+// and `size`/`cellSize` (default CELL=14) props; both default to today's
+// behavior, so existing consumers are unaffected. A2A is the all-to-all cyan
+// used by CpUlysses / EpRouting / EpBackward. Legend renders a swatch row.
 
 export const CHIP_COLORS = ['#2563eb', '#059669', '#7c3aed', '#ea580c'];
 export const YELLOW = '#eab308';
+export const A2A = '#0891b2';
 export const ABSENT = 'rgba(0, 0, 0, 0.08)';
 export const INK = '#1f2937';
 export const INK_SOFT = 'rgba(31, 41, 55, 0.6)';
@@ -15,27 +22,38 @@ export const CARD_BORDER = 'rgba(31, 41, 55, 0.18)';
 export const CELL = 14;
 export const GAP = 2;
 
-export function Cell({ fill, stripe, alpha = 1 }) {
+export function Cell({ fill, stripe, alpha = 1, highlight = false, size = CELL }) {
   const bg = stripe
     ? `repeating-linear-gradient(45deg, rgba(255,255,255,0.55) 0 2px, transparent 2px 5px), ${fill}`
     : fill;
   return (
     <div
       style={{
-        width: CELL,
-        height: CELL,
+        width: size,
+        height: size,
         background: bg,
         opacity: alpha,
         borderRadius: 3,
         boxSizing: 'border-box',
-        border: '1px solid rgba(31, 41, 55, 0.2)',
-        transition: 'background 200ms ease, opacity 200ms ease',
+        border: highlight ? `2px solid ${highlight === true ? YELLOW : highlight}` : '1px solid rgba(31, 41, 55, 0.2)',
+        transition: 'background 200ms ease, opacity 200ms ease, border 200ms ease',
       }}
     />
   );
 }
 
-export function TensorGrid({ name, subtitle, rows, cols, getFill, containerHeight }) {
+export function TensorGrid({ name, subtitle, rows, cols, getFill, containerHeight, cellSize = CELL, frame }) {
+  const cellBlock = (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: GAP }}>
+      {Array.from({ length: rows }, (_, r) => (
+        <div key={r} style={{ display: 'flex', gap: GAP }}>
+          {Array.from({ length: cols }, (_, c) => (
+            <Cell key={c} size={cellSize} {...getFill(r, c)} />
+          ))}
+        </div>
+      ))}
+    </div>
+  );
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3 }}>
       <div
@@ -46,15 +64,13 @@ export function TensorGrid({ name, subtitle, rows, cols, getFill, containerHeigh
           justifyContent: 'center',
         }}
       >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: GAP }}>
-          {Array.from({ length: rows }, (_, r) => (
-            <div key={r} style={{ display: 'flex', gap: GAP }}>
-              {Array.from({ length: cols }, (_, c) => (
-                <Cell key={c} {...getFill(r, c)} />
-              ))}
-            </div>
-          ))}
-        </div>
+        {frame ? (
+          <div style={{ padding: 2, border: `1.5px solid ${frame}`, borderRadius: 4, boxSizing: 'border-box' }}>
+            {cellBlock}
+          </div>
+        ) : (
+          cellBlock
+        )}
       </div>
       <div
         style={{
@@ -135,7 +151,7 @@ export function StepControls({ step, totalSteps, setStep }) {
           textAlign: 'center',
         }}
       >
-        Step {step} / {totalSteps - 1}
+        Step {step + 1} / {totalSteps}
       </div>
       <button
         onClick={() => setStep((s) => Math.min(totalSteps - 1, s + 1))}
@@ -188,6 +204,53 @@ export function Caption({ children }) {
       }}
     >
       {children}
+    </div>
+  );
+}
+
+// Swatch-row legend. Each item: { fill, label, stripe?, ring?, dashed? }.
+//   stripe → partial-sum hatch; ring → yellow "active" border;
+//   dashed → hollow swatch with a dashed border in `fill` (comm blocks).
+export function Legend({ items }) {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        gap: 16,
+        justifyContent: 'center',
+        fontSize: 11,
+        color: INK_SOFT,
+        flexWrap: 'wrap',
+        fontFamily: 'system-ui, -apple-system, sans-serif',
+      }}
+    >
+      {items.map((it, i) => {
+        const bg = it.stripe
+          ? `repeating-linear-gradient(45deg, rgba(255,255,255,0.55) 0 2px, transparent 2px 5px), ${it.fill}`
+          : it.dashed
+          ? 'transparent'
+          : it.fill;
+        return (
+          <span key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <span
+              style={{
+                display: 'inline-block',
+                width: 12,
+                height: 12,
+                background: bg,
+                borderRadius: 2,
+                boxSizing: 'border-box',
+                border: it.ring
+                  ? `2px solid ${it.ring === true ? YELLOW : it.ring}`
+                  : it.dashed
+                  ? `1.5px dashed ${it.fill}`
+                  : '1px solid rgba(31, 41, 55, 0.2)',
+              }}
+            />
+            {it.label}
+          </span>
+        );
+      })}
     </div>
   );
 }
