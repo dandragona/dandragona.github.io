@@ -16,7 +16,6 @@ import {
   Caption,
   Legend,
 } from './staircase-shared.jsx';
-import { LaneTimeline } from './comm-shared.jsx';
 
 // Ulysses attention (forward). Four devices, sequence-sharded. Every grid
 // drawn is the FULL logical tensor [S=8 tokens x A=4 heads] — sharding is
@@ -180,37 +179,6 @@ function DevicePanel({ d, step }) {
   );
 }
 
-// Exposed-comm schedule: proj → a2a → attention → a2a → proj, drawn serially.
-// The compute lane goes idle through each all-to-all — there is nothing to run
-// ahead of, so both transposes are paid in the open (the amortization argument,
-// not a hiding one).
-function Timeline({ step }) {
-  const blocks = [
-    { lane: 'compute', start: 0, dur: 1, label: 'proj', color: COMPUTE, kind: 'compute', visible: step >= 1, active: step === 1 },
-    { lane: 'a2a', start: 1, dur: 1, label: 'a2a QKV', color: A2A, kind: 'comm', visible: step >= 2, active: step === 2 },
-    { lane: 'compute', start: 2, dur: 1.8, label: 'attention', color: COMPUTE, kind: 'compute', visible: step >= 3, active: step === 3 },
-    { lane: 'a2a', start: 3.8, dur: 1, label: 'a2a O', color: A2A, kind: 'comm', visible: step >= 4, active: step === 4 },
-    { lane: 'compute', start: 4.8, dur: 1, label: 'proj', color: COMPUTE, kind: 'compute', visible: step >= 5, active: step === 5 },
-  ];
-  const annotations = [
-    { lane: 'compute', start: 1, dur: 1, text: 'idle', visible: step >= 2 },
-    { lane: 'compute', start: 3.8, dur: 1, text: 'idle', visible: step >= 4 },
-  ];
-  return (
-    <LaneTimeline
-      width={600}
-      duration={5.8}
-      lanes={[
-        { id: 'compute', label: 'compute' },
-        { id: 'a2a', label: 'all-to-all' },
-      ]}
-      blocks={blocks}
-      annotations={annotations}
-      footnote="Both all-to-alls are exposed — the compute lane stalls through each, with nothing to run ahead of. Ulysses doesn't hide the transpose; it drowns it under attention's S² compute."
-    />
-  );
-}
-
 export default function UlyssesAttention() {
   const [step, setStep] = useState(0);
   const phase = PHASES[step];
@@ -240,8 +208,6 @@ export default function UlyssesAttention() {
           <DevicePanel key={d} d={d} step={step} />
         ))}
       </div>
-
-      <Timeline step={step} />
 
       <Legend
         items={[

@@ -13,7 +13,6 @@ import {
   Caption,
   Legend,
 } from './staircase-shared.jsx';
-import { LaneTimeline } from './comm-shared.jsx';
 
 // Ring attention (forward). Four devices, each owning S/P of the sequence.
 // Q stays home; the K,V block rotates one seat around the ring per step. Every
@@ -151,49 +150,6 @@ function DeviceRow({ d, step }) {
   );
 }
 
-function Timeline({ step }) {
-  const done = step >= TOTAL_STEPS - 1;
-  const compute = Array.from({ length: P }, (_, t) => {
-    const j = resident(0, t);
-    return {
-      lane: 'attn',
-      start: t,
-      dur: 1,
-      label: `attn blk${j}`,
-      color: CHIP_COLORS[j],
-      kind: 'compute',
-      visible: step >= t,
-      active: step === t && !done,
-    };
-  });
-  const comm = Array.from({ length: P - 1 }, (_, t) => {
-    const j = resident(0, t);
-    return {
-      lane: 'hop',
-      start: t + 0.2,
-      dur: 0.6,
-      label: `hop blk${j}`,
-      color: CHIP_COLORS[j],
-      kind: 'comm',
-      visible: step >= t,
-      active: step === t && !done,
-    };
-  });
-
-  return (
-    <LaneTimeline
-      width={600}
-      duration={P}
-      lanes={[
-        { id: 'attn', label: 'attention' },
-        { id: 'hop', label: 'ring hop' },
-      ]}
-      blocks={[...compute, ...comm]}
-      footnote="Device 0's schedule (all four devices run it at once). Each hop sits strictly inside the attention block that hides it — zero exposed communication, and the final block needs no hop."
-    />
-  );
-}
-
 export default function RingAttention() {
   const [step, setStep] = useState(0);
 
@@ -210,8 +166,6 @@ export default function RingAttention() {
           ))}
         </div>
       </div>
-
-      <Timeline step={step} />
 
       <Legend
         items={[
