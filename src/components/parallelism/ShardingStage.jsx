@@ -2,7 +2,6 @@ import { useState } from 'react';
 
 const CHIP_COLORS = ['#2563eb', '#059669', '#7c3aed', '#ea580c'];
 const YELLOW = '#eab308';
-const REPLICATED = '#9ca3af';
 const ABSENT = 'rgba(0, 0, 0, 0.08)';
 const INK = '#1f2937';
 const INK_SOFT = 'rgba(31, 41, 55, 0.6)';
@@ -138,7 +137,7 @@ function getFills({ strategy, chipIdx, numChips, B, E, materialized, reduced, ga
         ? { fill: chipColor }
         : { fill: ABSENT };
     }
-    if (strategy === 'tp-col') return { fill: REPLICATED };
+    if (strategy === 'tp-col') return { fill: chipColor };
     return ownsBatchRow(strategy, chipIdx, numChips, B, r)
       ? { fill: chipColor }
       : { fill: ABSENT };
@@ -146,9 +145,10 @@ function getFills({ strategy, chipIdx, numChips, B, E, materialized, reduced, ga
 
   const wFill = (r, c) => {
     if (materialized) return { fill: YELLOW };
-    // DP and CP replicate W on every chip — gray, matching the legend's
-    // "replicated"; yellow is reserved for FSDP's just-in-time materialize.
-    if (strategy === 'dp' || strategy === 'cp') return { fill: REPLICATED };
+    // DP and CP replicate W on every chip — drawn in the chip's own color and
+    // fully filled (a replicated tensor is whole, not sharded); yellow is
+    // reserved for FSDP's just-in-time materialize.
+    if (strategy === 'dp' || strategy === 'cp') return { fill: chipColor };
     if (strategy === 'tp-col') {
       return ownsContiguousShard(c, E, numChips, chipIdx)
         ? { fill: chipColor }
@@ -372,8 +372,7 @@ export default function ShardingStage({
           flexWrap: 'wrap',
         }}
       >
-        <LegendDot color={CHIP_COLORS[0]} label="this chip's shard" />
-        <LegendDot color={REPLICATED} label="replicated" />
+        <LegendDot color={CHIP_COLORS[0]} label="this chip's data (shard or replica)" />
         <LegendDot color={YELLOW} label="materialized" />
         <LegendDot
           color={`repeating-linear-gradient(45deg, rgba(255,255,255,0.55) 0 2px, transparent 2px 5px), ${CHIP_COLORS[0]}`}

@@ -16,7 +16,6 @@ import {
   Legend,
   buttonStyle,
 } from './staircase-shared.jsx';
-import { LaneTimeline } from './comm-shared.jsx';
 
 // Expert parallelism — all-to-all dispatch, local FFN, all-to-all combine.
 // The structural analogue of Ulysses attention, and it inherits Ulysses's
@@ -47,6 +46,7 @@ const COMPUTE = '#92400e';
 
 const HOME = (i) => Math.floor(i / SP);
 
+// These arrays are also the FIRST picks of EpRing's top-2 router (PICKS_*[r][0]) — keep in sync.
 // Each expert gets exactly 2 tokens; token 6 (home device 3, expert 3) stays local.
 const ASSIGN_BALANCED = [1, 2, 0, 3, 1, 0, 3, 2];
 // Expert 0 drowns with 5 tokens, expert 1 starves with 0, experts 2 and 3 split the rest.
@@ -199,53 +199,6 @@ function DevicePanel({ d, step, ASSIGN }) {
   );
 }
 
-// Exposed-comm schedule: dispatch (a2a) → per-device FFN → combine (a2a).
-// Both all-to-alls are drawn serially — nothing computes beneath them. Each
-// device's FFN length is proportional to how many tokens the router sent it
-// (average share = S/P = 2 tokens); under the hot schedule expert 0's lane
-// stretches and the combine — which can't start until the slowest device
-// finishes — is shoved right, stalling everyone who already finished.
-const AVG_TOKENS = SP; // S/P — the balanced per-expert share
-
-function Timeline({ step, ASSIGN }) {
-  const counts = Array.from({ length: P }, (_, d) => ASSIGN.filter((a) => a === d).length);
-  const dur = counts.map((c) => c / AVG_TOKENS);
-  const maxDur = Math.max(...dur);
-  const combineStart = 1 + maxDur;
-
-  const lanes = [
-    ...Array.from({ length: P }, (_, d) => ({ id: `d${d}`, label: `dev ${d} FFN` })),
-    { id: 'a2a', label: 'all-to-all' },
-  ];
-
-  const blocks = [
-    { lane: 'a2a', start: 0, dur: 1, label: 'dispatch', color: A2A, kind: 'comm', visible: step >= 2, active: step === 2 },
-    ...counts
-      .map((c, d) =>
-        c > 0
-          ? { lane: `d${d}`, start: 1, dur: dur[d], label: 'ffn', color: CHIP_COLORS[d], kind: 'compute', visible: step >= 3, active: step === 3 }
-          : null
-      )
-      .filter(Boolean),
-    { lane: 'a2a', start: combineStart, dur: 1, label: 'combine', color: A2A, kind: 'comm', visible: step >= 4, active: step === 4 },
-  ];
-
-  const annotations = counts
-    .map((c, d) => (c === 0 ? { lane: `d${d}`, start: 1, dur: maxDur, text: 'idle — 0 tokens', visible: step >= 3 } : null))
-    .filter(Boolean);
-
-  return (
-    <LaneTimeline
-      width={600}
-      duration={combineStart + 1}
-      lanes={lanes}
-      blocks={blocks}
-      annotations={annotations}
-      footnote="Every device's FFN runs at once, but both all-to-alls are exposed — nothing computes beneath them. Balanced, the FFNs finish together and the combine fires right away; one hot expert stretches its device's lane and shoves the combine right, so every other device sits idle until the straggler drains."
-    />
-  );
-}
-
 export default function EpAllToAll() {
   const [step, setStep] = useState(0);
   const [hot, setHot] = useState(false);
@@ -287,8 +240,6 @@ export default function EpAllToAll() {
           <DevicePanel key={d} d={d} step={step} ASSIGN={ASSIGN} />
         ))}
       </div>
-
-      <Timeline step={step} ASSIGN={ASSIGN} />
 
       <Legend
         items={[

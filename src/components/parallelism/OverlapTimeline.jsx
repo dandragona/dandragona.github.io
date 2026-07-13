@@ -54,7 +54,7 @@ const SCHEMAS = {
           },
           {
             caption:
-              'Layer 1 backward produces ∂W1; every ∂W all-reduce hides behind the next layer’s backward — the full staircase.',
+              'Layer 1 backward produces ∂W1 — the last gradient. Every earlier ∂W all-reduce tucked under the next layer’s backward; ∂W1’s has nothing after it, so a short tail stays exposed at the end of the step.',
             computeTags: ['∂W4', '∂W3', '∂W2', '∂W1'],
             commTags: ['∂W4', '∂W3', '∂W2', '∂W1'],
           },
