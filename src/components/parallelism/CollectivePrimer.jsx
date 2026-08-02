@@ -348,7 +348,7 @@ function buttonStyle(disabled, primary) {
   };
 }
 
-function CollectivePanel({ id, title, description, totalSteps, slotsFn, captionFn }) {
+function CollectivePanel({ id, title, description, totalSteps, slotsFn, captionFn, legendKeys }) {
   const [step, setStep] = useState(0);
   return (
     <div
@@ -370,6 +370,7 @@ function CollectivePanel({ id, title, description, totalSteps, slotsFn, captionF
           {description}
         </div>
       </div>
+      <Legend keys={legendKeys} />
       <ChipsGrid slotsFn={slotsFn} step={step} />
       <div
         style={{
@@ -417,14 +418,14 @@ function CollectivePanel({ id, title, description, totalSteps, slotsFn, captionF
   );
 }
 
-function Legend() {
-  const Item = ({ swatch, label }) => (
-    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, color: INK_SOFT }}>
-      <span style={{ width: 24, height: 14, borderRadius: 3, ...swatch }} />
-      {label}
-    </span>
+function SolidSwatch({ background }) {
+  return (
+    <span style={{ width: 24, height: 14, borderRadius: 3, background, border: '1px solid rgba(31, 41, 55, 0.22)' }} />
   );
-  const partialSwatch = (chipIdxs) => (
+}
+
+function PartialSwatch({ chipIdxs }) {
+  return (
     <span
       style={{
         width: 24,
@@ -444,6 +445,24 @@ function Legend() {
       <span style={{ position: 'absolute', inset: 0, background: HATCH_OVERLAY }} />
     </span>
   );
+}
+
+// Every swatch a panel can draw, keyed. Each CollectivePanel passes only the
+// keys its slotsFn actually produces, so a panel's key never lists a swatch the
+// reader can't find in it (AG/A2A move data — no partial sums or yellow; RS/AR
+// reduce — no plain "owned data" cell).
+const LEGEND_ITEMS = {
+  solid: { swatch: <SolidSwatch background={CHIP_COLORS[0]} />, label: 'solid = owned data' },
+  partial1: { swatch: <PartialSwatch chipIdxs={[0]} />, label: 'hatched = partial sum (1 contributor)' },
+  partialMulti: {
+    swatch: <PartialSwatch chipIdxs={[0, 3]} />,
+    label: 'hatched stripes = partial sum (multiple contributors)',
+  },
+  summed: { swatch: <SolidSwatch background={SUMMED} />, label: 'solid yellow = fully reduced' },
+  empty: { swatch: <SolidSwatch background={ABSENT} />, label: 'gray = empty (sent away)' },
+};
+
+function Legend({ keys }) {
   return (
     <div
       style={{
@@ -454,20 +473,15 @@ function Legend() {
         fontFamily: 'system-ui, -apple-system, sans-serif',
       }}
     >
-      <Item
-        swatch={{ background: CHIP_COLORS[0], border: '1px solid rgba(31, 41, 55, 0.22)' }}
-        label="solid = owned data (AG, A2A)"
-      />
-      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, color: INK_SOFT }}>
-        {partialSwatch([0])}
-        hatched = partial sum (1 contributor)
-      </span>
-      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, color: INK_SOFT }}>
-        {partialSwatch([0, 3])}
-        hatched stripes = partial sum (multiple contributors)
-      </span>
-      <Item swatch={{ background: SUMMED, border: '1px solid rgba(31, 41, 55, 0.22)' }} label="solid yellow = fully reduced" />
-      <Item swatch={{ background: ABSENT, border: '1px solid rgba(31, 41, 55, 0.22)' }} label="gray = empty (sent away)" />
+      {keys.map((key) => (
+        <span
+          key={key}
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, color: INK_SOFT }}
+        >
+          {LEGEND_ITEMS[key].swatch}
+          {LEGEND_ITEMS[key].label}
+        </span>
+      ))}
     </div>
   );
 }
@@ -498,8 +512,6 @@ export default function CollectivePrimer() {
         </div>
       </div>
 
-      <Legend />
-
       <CollectivePanel
         id="collective-all-gather"
         title="All-gather (ring algorithm)"
@@ -507,6 +519,7 @@ export default function CollectivePrimer() {
         totalSteps={4}
         slotsFn={agSlots}
         captionFn={agCaption}
+        legendKeys={['solid', 'empty']}
       />
       <CollectivePanel
         id="collective-reduce-scatter"
@@ -515,6 +528,7 @@ export default function CollectivePrimer() {
         totalSteps={4}
         slotsFn={rsSlots}
         captionFn={rsCaption}
+        legendKeys={['partial1', 'partialMulti', 'summed', 'empty']}
       />
       <CollectivePanel
         id="collective-all-reduce"
@@ -523,6 +537,7 @@ export default function CollectivePrimer() {
         totalSteps={7}
         slotsFn={arSlots}
         captionFn={arCaption}
+        legendKeys={['partial1', 'partialMulti', 'summed', 'empty']}
       />
       <CollectivePanel
         id="collective-all-to-all"
@@ -531,6 +546,7 @@ export default function CollectivePrimer() {
         totalSteps={4}
         slotsFn={a2aSlots}
         captionFn={a2aCaption}
+        legendKeys={['solid']}
       />
     </div>
   );
