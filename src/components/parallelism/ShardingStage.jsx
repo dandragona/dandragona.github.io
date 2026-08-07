@@ -11,33 +11,55 @@ const CARD_BORDER = 'rgba(31, 41, 55, 0.18)';
 const CELL = 16;
 const GAP = 2;
 
+const STRIPE = `repeating-linear-gradient(45deg, rgba(255,255,255,0.55) 0 2px, transparent 2px 5px), ${CHIP_COLORS[0]}`;
+
+// The only swatches a diagram draws, matching the fills getFills() produces.
+// `elsewhere` uses ABSENT — the same value the cells use — so the key and the
+// picture are the same gray.
+const SWATCHES = {
+  own: { color: CHIP_COLORS[0], label: "this chip's data (shard or replica)" },
+  materialized: { color: YELLOW, label: 'materialized' },
+  partialSum: { color: STRIPE, label: 'partial sum' },
+  elsewhere: { color: ABSENT, label: 'elsewhere' },
+};
+
+// Each strategy lists only the swatches its own diagram can draw. DP and CP
+// never leave the chip's own color, FSDP and column-parallel TP turn a tensor
+// yellow once it is materialized, and only row-parallel TP stripes a partial
+// sum. A key that listed all four would send the reader hunting for a color
+// that strategy never renders.
 const STRATEGIES = {
   dp: {
     label: 'Data Parallelism',
     blurb: 'Each chip owns a slice of the batch. W is replicated everywhere.',
     supportsMaterialize: false,
+    legend: ['own', 'elsewhere'],
   },
   fsdp: {
     label: 'FSDP',
     blurb:
       "Batch sharded as in DP, but W's rows are partitioned across chips. The full W is gathered just in time, used, and freed.",
     supportsMaterialize: true,
+    legend: ['own', 'materialized', 'elsewhere'],
   },
   cp: {
     label: 'Context Parallelism',
     blurb:
       'Each horizontal band is one chip\'s slice of the sequence — a real device shard, unlike TP\'s within-layer chunks. For the dense layer this is just DP: W is replicated and no communication is needed; attention is where CP pays.',
     supportsMaterialize: false,
+    legend: ['own', 'elsewhere'],
   },
   'tp-col': {
     label: 'Tensor Parallelism (column-parallel)',
     blurb: 'X is replicated on every chip — nothing about the input is sharded. W is split by output columns; each chip computes a clean column slice of Y. Forward needs no collective if the next op consumes the slice; an all-gather rebuilds the full Y.',
     supportsGather: true,
+    legend: ['own', 'materialized', 'elsewhere'],
   },
   'tp-row': {
     label: 'Tensor Parallelism (row-parallel)',
     blurb: "X arrives already sliced along the contraction dimension E — in practice, as the column-parallel layer's output. W's rows are partitioned to match. Each chip computes a full-shape partial sum of Y; a reduce-scatter (or all-reduce) combines them.",
     supportsReduce: true,
+    legend: ['own', 'partialSum', 'elsewhere'],
   },
 };
 
@@ -65,6 +87,7 @@ function Cell({ fill, stripe }) {
   const bg = stripe
     ? `repeating-linear-gradient(45deg, rgba(255,255,255,0.55) 0 2px, transparent 2px 5px), ${fill}`
     : fill;
+  // NOTE: STRIPE mirrors this pattern for the legend's partial-sum swatch.
   return (
     <div
       style={{
@@ -372,13 +395,9 @@ export default function ShardingStage({
           flexWrap: 'wrap',
         }}
       >
-        <LegendDot color={CHIP_COLORS[0]} label="this chip's data (shard or replica)" />
-        <LegendDot color={YELLOW} label="materialized" />
-        <LegendDot
-          color={`repeating-linear-gradient(45deg, rgba(255,255,255,0.55) 0 2px, transparent 2px 5px), ${CHIP_COLORS[0]}`}
-          label="partial sum"
-        />
-        <LegendDot color="rgba(31, 41, 55, 0.15)" label="elsewhere" />
+        {cfg.legend.map((key) => (
+          <LegendDot key={key} color={SWATCHES[key].color} label={SWATCHES[key].label} />
+        ))}
       </div>
     </div>
   );

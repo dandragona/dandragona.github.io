@@ -1,18 +1,19 @@
 # Résumé source
 
 Single-source résumé, typeset with [Typst](https://typst.app). This produces
-`../public/pdfs/resume.pdf`, which the site serves at `https://dandragona.me/pdfs/resume.pdf`.
+`../public/pdfs/danielmandragona.pdf`, which the site serves at
+`https://dandragona.me/pdfs/danielmandragona.pdf` (linked from the Links page).
 
 ## Build
 
 ```sh
 brew install typst        # one-time
-./build.sh                # → ../public/pdfs/resume.pdf
+./build.sh                # → ../public/pdfs/danielmandragona.pdf
 ```
 
 ## Editing
 
-Everything lives in **`resume.typ`** — it's self-contained and readable. Content (roles,
+Everything lives in **`resume-live.typ`** — it's self-contained and readable. Content (roles,
 bullets, talks, education, skills, publication) sits in plain `#role(...)` / `#talk(...)`
 calls; design knobs (accent colors, fonts, spacing) are the `#let` variables at the top:
 
@@ -35,6 +36,6 @@ calls; design knobs (accent colors, fonts, spacing) are the `#let` variables at 
 The PDF is US-Letter, 2 pages, tagged, single-column. Quick parse check:
 
 ```sh
-pdfinfo ../public/pdfs/resume.pdf | grep -E 'Pages|Page size|Tagged'
-pdftotext ../public/pdfs/resume.pdf - | less   # confirm clean text + reading order
+pdfinfo ../public/pdfs/danielmandragona.pdf | grep -E 'Pages|Page size|Tagged'
+pdftotext ../public/pdfs/danielmandragona.pdf - | less   # confirm clean text + reading order
 ```
