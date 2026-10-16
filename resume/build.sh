@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# Build the résumé PDF from the Typst source and drop it where the site serves it.
-# The Links page (src/pages/links.astro) links to /pdfs/danielmandragona.pdf, so that
-# is the output path the site expects. Requires: `typst` (brew install typst) and the
-# fonts in ./fonts (see README.md).
+# Build the current/live résumé and refresh its two public URLs. The C++/JAX
+# variant has its own source and build-cpp-jax.sh, so this command never changes it.
 set -euo pipefail
 cd "$(dirname "$0")"
-typst compile --font-path fonts resume-live.typ ../public/pdfs/danielmandragona.pdf
-echo "✓ built ../public/pdfs/danielmandragona.pdf"
+mkdir -p ../output/pdf
+typst compile --font-path fonts resume-live.typ ../output/pdf/daniel-mandragona-resume-current.pdf
+cp ../output/pdf/daniel-mandragona-resume-current.pdf ../public/pdfs/resume.pdf
+cp ../output/pdf/daniel-mandragona-resume-current.pdf ../public/pdfs/danielmandragona.pdf
+echo "✓ built ../output/pdf/daniel-mandragona-resume-current.pdf"
+echo "✓ refreshed ../public/pdfs/{resume,danielmandragona}.pdf"
