@@ -1,41 +1,49 @@
-# Résumé source
+# Résumé sources
 
-Single-source résumé, typeset with [Typst](https://typst.app). This produces
-`../public/pdfs/danielmandragona.pdf`, which the site serves at
-`https://dandragona.me/pdfs/danielmandragona.pdf` (linked from the Links page).
+Two independent résumé versions are maintained in this directory:
+
+- **Current/live:** `resume-live.typ` -> `../output/pdf/daniel-mandragona-resume-current.pdf`
+- **C++/JAX:** `resume-cpp-jax.typ` -> `../output/pdf/daniel-mandragona-resume-cpp-jax.pdf`
+
+The website continues to link to the current version at
+`https://dandragona.me/pdfs/resume.pdf`. The C++/JAX version is also published at
+`https://dandragona.me/pdfs/resume-cpp-jax.pdf`, but changing it does not replace the live résumé.
 
 ## Build
 
 ```sh
 brew install typst        # one-time
-./build.sh                # → ../public/pdfs/danielmandragona.pdf
+./build.sh                # current/live version
+./build-cpp-jax.sh        # separate C++/JAX version
 ```
+
+`build.sh` refreshes `public/pdfs/resume.pdf` and the legacy
+`public/pdfs/danielmandragona.pdf` URL. `build-cpp-jax.sh` only refreshes
+`public/pdfs/resume-cpp-jax.pdf`.
 
 ## Editing
 
-Everything lives in **`resume-live.typ`** — it's self-contained and readable. Content (roles,
-bullets, talks, education, skills, publication) sits in plain `#role(...)` / `#talk(...)`
-calls; design knobs (accent colors, fonts, spacing) are the `#let` variables at the top:
+Both Typst sources are self-contained. Content sits in plain `#projgroup(...)` and
+`#skillrow(...)` calls; design knobs (accent colors, fonts, spacing) are the `#let`
+variables near the top of each file.
 
-- `accent` `#1A73E8` — brand blue (entry titles, links, icons, section rules)
-- `deep`   `#174EA6` — Google navy (name + section headers)
+- `accent` `#1A73E8` - brand blue (entry titles, links, icons, section rules)
+- `deep` `#174EA6` - Google navy (name and section headers)
 - `heading-font` `Google Sans` · `body-font` `Charter`
 
 ## Fonts
 
-- **Font Awesome 6** (contact icons) — OFL, committed under `fonts/`.
-- **Charter** — bundled with Typst, no file needed.
-- **Google Sans** — Google's **proprietary** brand font, intentionally **git-ignored**
-  (see `.gitignore`). The build needs `GoogleSans-{Regular,Medium,Bold,Italic}.ttf` in
-  `fonts/`; the published PDF embeds only a subset, which is fine for a document. If the
-  fonts are absent, either drop them into `fonts/` or change `heading-font` to a free
-  alternative (e.g. `"Outfit"`).
+- **Font Awesome 6** (contact icons) - OFL, committed under `fonts/`.
+- **Charter** - bundled with Typst, no file needed.
+- **Google Sans** - Google's proprietary brand font, intentionally git-ignored.
+  The build needs `GoogleSans-{Regular,Medium,Bold,Italic}.ttf` in `fonts/`.
 
-## ATS / verification
+## Verification
 
-The PDF is US-Letter, 2 pages, tagged, single-column. Quick parse check:
+Both PDFs are US-Letter, one page, tagged, and single-column. Quick checks:
 
 ```sh
-pdfinfo ../public/pdfs/danielmandragona.pdf | grep -E 'Pages|Page size|Tagged'
-pdftotext ../public/pdfs/danielmandragona.pdf - | less   # confirm clean text + reading order
+pdfinfo ../output/pdf/daniel-mandragona-resume-current.pdf | grep -E 'Pages|Page size|Tagged'
+pdfinfo ../output/pdf/daniel-mandragona-resume-cpp-jax.pdf | grep -E 'Pages|Page size|Tagged'
+pdftotext ../output/pdf/daniel-mandragona-resume-cpp-jax.pdf - | less
 ```
