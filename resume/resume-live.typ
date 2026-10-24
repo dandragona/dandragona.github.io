@@ -245,7 +245,7 @@
         [Upstreamed MaxText's #link("https://github.com/AI-Hypercomputer/maxtext/pull/4834")[mHC-lite Pallas kernel]: VMEM-fused norm/projection/gating, closed-form RMSNorm+GEMM VJP, packed MXU contractions, and 3-path FP32 dX accumulation; up to 2.6× vs. pure JAX, +15% E2E tok/s on a customer LLM.],
         [Built an E2E hybrid-precision Pallas S5 SSM kernel for Oxford FLAIR's LOBS5 limit-order-book model: 2× faster training step than pure-JAX associative scan at 12k sequence length.],
         [Fused VMEM dQ accumulation and causal row-band skip into Tokamax Splash Attention bwd (−3.3% DSv3 step time).],
-        [Advised on a chunked Gated DeltaNet Pallas kernel (2.2× layer step); derived the closed-form backward gradient-flow graph used to verify numerics across the chunked recurrence.],
+        [Advised on a chunked Gated DeltaNet Pallas kernel (2.2× over pure JAX); derived the closed-form backward gradient-flow graph used to verify numerics across the chunked recurrence.],
         [Eliminated row-max reductions in FP8 Splash Attention via fixed-ceiling softmax and a fused dynamic norm-bound gate: −22% fwd kernel at 4k, −44% at 128k, and −12–16% step time at 128k–256k without underflow.],
       ),
     )
@@ -375,9 +375,9 @@
 
 #skillrow(
   "Languages & Frameworks",
-  ("Python", "C++", "Go", "C", "CUDA", "JAX", "Pallas", "XLA / HLO", "MaxText"),
+  ("Python", "C++", "Golang", "C", "JAX", "Pallas", "XLA / HLO"),
 )
 #skillrow(
   "ML Systems",
-  ("TPU Kernels", "Distributed Sharding & Collectives", "FP8 & MoE Training", "XProf", "Roofline Analysis", "QEC"),
+  ("TPU Kernels", "Distributed Sharding & Collectives", "Quantization", "MoE", "XProf", "Roofline Analysis"),
 )
