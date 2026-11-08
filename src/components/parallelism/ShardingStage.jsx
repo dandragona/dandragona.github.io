@@ -1,404 +1,251 @@
 import { useState } from 'react';
+import {
+  DEVICE_COLORS,
+  COPY_COLOR,
+  EMPTY_COLOR,
+  useFigureWidth,
+  Figure,
+  DiagramSvg,
+  Slot,
+  Cell,
+  StepLine,
+  StepControls,
+  Legend,
+} from './diagram-kit.jsx';
 
-const CHIP_COLORS = ['#2563eb', '#059669', '#7c3aed', '#ea580c'];
-const YELLOW = '#eab308';
-const ABSENT = 'rgba(0, 0, 0, 0.08)';
-const INK = '#1f2937';
-const INK_SOFT = 'rgba(31, 41, 55, 0.6)';
-const CARD_BG = 'rgba(255, 255, 255, 0.35)';
-const CARD_BORDER = 'rgba(31, 41, 55, 0.18)';
+// One matmul, X @ W = Y, on two devices. A tensor is drawn in full on each
+// device; a colored cell is held there and an empty one is held elsewhere.
 
-const CELL = 16;
+const T = 4;
+const E = 2;
+const DEVICES = [0, 1];
 const GAP = 2;
+const SYMBOL_WIDTH = 22;
+const DEVICE_GAP = 28;
+const HEADER_HEIGHT = 22;
+const LABEL_HEIGHT = 22;
 
-const STRIPE = `repeating-linear-gradient(45deg, rgba(255,255,255,0.55) 0 2px, transparent 2px 5px), ${CHIP_COLORS[0]}`;
+const COPY_ITEM = { fill: COPY_COLOR, label: 'copy on every device' };
+const ELSEWHERE_ITEM = { fill: EMPTY_COLOR, label: 'on the other device' };
+const PARTIAL_ITEM = { fill: DEVICE_COLORS[0], hatched: true, label: 'partial sum' };
 
-// The only swatches a diagram draws, matching the fills getFills() produces.
-// `elsewhere` uses ABSENT — the same value the cells use — so the key and the
-// picture are the same gray.
-const SWATCHES = {
-  own: { color: CHIP_COLORS[0], label: "this chip's data (shard or replica)" },
-  materialized: { color: YELLOW, label: 'materialized' },
-  partialSum: { color: STRIPE, label: 'partial sum' },
-  elsewhere: { color: ABSENT, label: 'elsewhere' },
-};
+const rowOwner = (r) => Math.floor((r * DEVICES.length) / T);
 
-// Each strategy lists only the swatches its own diagram can draw. DP and CP
-// never leave the chip's own color, FSDP and column-parallel TP turn a tensor
-// yellow once it is materialized, and only row-parallel TP stripes a partial
-// sum. A key that listed all four would send the reader hunting for a color
-// that strategy never renders.
+function allCells(tensor, rows, cols, build) {
+  return Array.from({ length: rows * cols }, (_, i) => {
+    const r = Math.floor(i / cols);
+    const c = i % cols;
+    return { tensor, r, c, ...build(r, c) };
+  });
+}
+
+function ownedRows(tensor, d) {
+  return allCells(tensor, T, E, (r, c) => ({
+    key: `${tensor}-${d}-${r}-${c}`,
+    device: d,
+    fill: DEVICE_COLORS[d],
+  })).filter((cell) => rowOwner(cell.r) === d);
+}
+
 const STRATEGIES = {
   dp: {
-    label: 'Data Parallelism',
-    blurb: 'Each chip owns a slice of the batch. W is replicated everywhere.',
-    supportsMaterialize: false,
-    legend: ['own', 'elsewhere'],
+    label: 'Data parallelism on two devices',
+    legend: [COPY_ITEM, ELSEWHERE_ITEM],
+    lines: [],
+    cells: () =>
+      DEVICES.flatMap((d) => [
+        ...ownedRows('X', d),
+        ...allCells('W', E, E, (r, c) => ({ key: `W-${d}-${r}-${c}`, device: d, fill: COPY_COLOR })),
+        ...ownedRows('Y', d),
+      ]),
   },
   fsdp: {
-    label: 'FSDP',
-    blurb:
-      "Batch sharded as in DP, but W's rows are partitioned across chips. The full W is gathered just in time, used, and freed.",
-    supportsMaterialize: true,
-    legend: ['own', 'materialized', 'elsewhere'],
-  },
-  cp: {
-    label: 'Context Parallelism',
-    blurb:
-      'Each horizontal band is one chip\'s slice of the sequence — a real device shard, unlike TP\'s within-layer chunks. For the dense layer this is just DP: W is replicated and no communication is needed; attention is where CP pays.',
-    supportsMaterialize: false,
-    legend: ['own', 'elsewhere'],
+    label: 'FSDP on two devices',
+    legend: [ELSEWHERE_ITEM],
+    lines: [
+      'Each device holds its rows of X and one row of W.',
+      'All-gather: each device receives the rest of W.',
+      'Each device runs the matmul on its rows.',
+      'Each device frees the row of W it received.',
+    ],
+    cells: (step) =>
+      DEVICES.flatMap((d) => {
+        const other = 1 - d;
+        return [
+          ...ownedRows('X', d),
+          ...allCells('W', 1, E, (_r, c) => ({
+            key: `W-${d}-${c}`,
+            device: d,
+            r: d,
+            fill: DEVICE_COLORS[d],
+          })),
+          // A received row starts under the sender's copy, then travels here.
+          ...allCells('W', 1, E, (_r, c) => ({
+            key: `W-copy-${d}-${c}`,
+            device: step === 0 ? other : d,
+            r: other,
+            fill: DEVICE_COLORS[other],
+            opacity: step === 1 || step === 2 ? 1 : 0,
+          })),
+          ...ownedRows('Y', d).map((cell) => ({ ...cell, opacity: step >= 2 ? 1 : 0 })),
+        ];
+      }),
   },
   'tp-col': {
-    label: 'Tensor Parallelism (column-parallel)',
-    blurb: 'X is replicated on every chip — nothing about the input is sharded. W is split by output columns; each chip computes a clean column slice of Y. Forward needs no collective if the next op consumes the slice; an all-gather rebuilds the full Y.',
-    supportsGather: true,
-    legend: ['own', 'materialized', 'elsewhere'],
+    label: 'Column-parallel tensor parallelism on two devices',
+    legend: [COPY_ITEM, ELSEWHERE_ITEM],
+    lines: [
+      'Every device has all of X and its own column of W.',
+      'Each device computes its own column of Y. Nothing moves.',
+    ],
+    cells: (step) =>
+      DEVICES.flatMap((d) => [
+        ...allCells('X', T, E, (r, c) => ({ key: `X-${d}-${r}-${c}`, device: d, fill: COPY_COLOR })),
+        ...allCells('W', E, 1, (r) => ({ key: `W-${d}-${r}`, device: d, c: d, fill: DEVICE_COLORS[d] })),
+        ...allCells('Y', T, 1, (r) => ({
+          key: `Y-${d}-${r}`,
+          device: d,
+          c: d,
+          fill: DEVICE_COLORS[d],
+          opacity: step >= 1 ? 1 : 0,
+        })),
+      ]),
   },
   'tp-row': {
-    label: 'Tensor Parallelism (row-parallel)',
-    blurb: "X arrives already sliced along the contraction dimension E — in practice, as the column-parallel layer's output. W's rows are partitioned to match. Each chip computes a full-shape partial sum of Y; a reduce-scatter (or all-reduce) combines them.",
-    supportsReduce: true,
-    legend: ['own', 'partialSum', 'elsewhere'],
+    label: 'Row-parallel tensor parallelism on two devices',
+    legend: [PARTIAL_ITEM, ELSEWHERE_ITEM],
+    lines: [
+      'Each device has one column of X and one row of W.',
+      'Each device computes a full-sized Y, but it is only a partial sum.',
+      'Reduce-scatter: each device sends the rows it doesn’t keep and adds the rows it receives. Each device ends with half of the rows of Y, finished.',
+    ],
+    cells: (step) =>
+      DEVICES.flatMap((d) => [
+        ...allCells('X', T, 1, (r) => ({ key: `X-${d}-${r}`, device: d, c: d, fill: DEVICE_COLORS[d] })),
+        ...allCells('W', 1, E, (_r, c) => ({ key: `W-${d}-${c}`, device: d, r: d, fill: DEVICE_COLORS[d] })),
+        ...allCells('Y', T, E, (r, c) => {
+          const kept = rowOwner(r) === d;
+          return {
+            key: `Y-${d}-${r}-${c}`,
+            // A row this device doesn't keep travels to the device that does.
+            device: step === 2 ? rowOwner(r) : d,
+            fill: DEVICE_COLORS[d],
+            hatched: step === 1 || !kept,
+            opacity: step === 0 || (step === 2 && !kept) ? 0 : 1,
+            arriving: step === 2 && !kept,
+            late: step === 2 && kept,
+          };
+        }),
+      ]),
   },
 };
 
-function ownsBatchRow(strategy, chipIdx, numChips, B, row) {
-  if (strategy === 'dp' || strategy === 'fsdp' || strategy === 'cp')
-    return ownsContiguousShard(row, B, numChips, chipIdx);
-  return false;
-}
-
-// True when `idx` falls in chip `chipIdx`'s contiguous shard of an axis of
-// length `total` split across `numChips`. Works for any total/numChips (not
-// just total === numChips): each chip owns a block of total/numChips entries.
-function ownsContiguousShard(idx, total, numChips, chipIdx) {
-  const per = total / numChips;
-  return Math.floor(idx / per) === chipIdx;
-}
-
-function ownsWRow(strategy, chipIdx, row, numChips, E) {
-  if (strategy === 'fsdp' || strategy === 'tp-row')
-    return ownsContiguousShard(row, E, numChips, chipIdx);
-  return false;
-}
-
-function Cell({ fill, stripe }) {
-  const bg = stripe
-    ? `repeating-linear-gradient(45deg, rgba(255,255,255,0.55) 0 2px, transparent 2px 5px), ${fill}`
-    : fill;
-  // NOTE: STRIPE mirrors this pattern for the legend's partial-sum swatch.
-  return (
-    <div
-      style={{
-        width: CELL,
-        height: CELL,
-        background: bg,
-        borderRadius: 3,
-        border: '1px solid rgba(31, 41, 55, 0.2)',
-        transition: 'background 200ms ease',
-      }}
-    />
-  );
-}
-
-function TensorGrid({ name, rows, cols, getFill, containerHeight }) {
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
-      <div
-        style={{
-          height: containerHeight,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-        }}
-      >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: GAP }}>
-          {Array.from({ length: rows }, (_, r) => (
-            <div key={r} style={{ display: 'flex', gap: GAP }}>
-              {Array.from({ length: cols }, (_, c) => (
-                <Cell key={c} {...getFill(r, c)} />
-              ))}
-            </div>
-          ))}
-        </div>
-      </div>
-      <div style={{ fontSize: 11, color: INK_SOFT, fontFamily: 'monospace' }}>{name}</div>
-    </div>
-  );
-}
-
-function OpSymbol({ children, containerHeight }) {
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
-      <div
-        style={{
-          height: containerHeight,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          fontSize: 18,
-          color: INK_SOFT,
-          fontFamily: 'system-ui, -apple-system, sans-serif',
-          fontWeight: 500,
-          minWidth: 12,
-        }}
-      >
-        {children}
-      </div>
-      <div style={{ fontSize: 11, visibility: 'hidden' }}>·</div>
-    </div>
-  );
-}
-
-function getFills({ strategy, chipIdx, numChips, B, E, materialized, reduced, gathered }) {
-  const chipColor = CHIP_COLORS[chipIdx % CHIP_COLORS.length];
-
-  const xFill = (r, c) => {
-    if (strategy === 'tp-row') {
-      return ownsContiguousShard(c, E, numChips, chipIdx)
-        ? { fill: chipColor }
-        : { fill: ABSENT };
-    }
-    if (strategy === 'tp-col') return { fill: chipColor };
-    return ownsBatchRow(strategy, chipIdx, numChips, B, r)
-      ? { fill: chipColor }
-      : { fill: ABSENT };
+function measure(width) {
+  const room = width - 6 * GAP - 4 * SYMBOL_WIDTH - DEVICE_GAP;
+  const size = Math.max(13, Math.min(24, Math.floor(room / 12)));
+  const pitch = size + GAP;
+  const tensorWidth = E * pitch - GAP;
+  const tallHeight = T * pitch - GAP;
+  const shortHeight = E * pitch - GAP;
+  const deviceWidth = 3 * tensorWidth + 2 * SYMBOL_WIDTH;
+  const left = Math.max(0, (width - 2 * deviceWidth - DEVICE_GAP) / 2);
+  const tensorX = { X: 0, W: tensorWidth + SYMBOL_WIDTH, Y: 2 * (tensorWidth + SYMBOL_WIDTH) };
+  const tensorY = {
+    X: HEADER_HEIGHT,
+    W: HEADER_HEIGHT + (tallHeight - shortHeight) / 2,
+    Y: HEADER_HEIGHT,
   };
-
-  const wFill = (r, c) => {
-    if (materialized) return { fill: YELLOW };
-    // DP and CP replicate W on every chip — drawn in the chip's own color and
-    // fully filled (a replicated tensor is whole, not sharded); yellow is
-    // reserved for FSDP's just-in-time materialize.
-    if (strategy === 'dp' || strategy === 'cp') return { fill: chipColor };
-    if (strategy === 'tp-col') {
-      return ownsContiguousShard(c, E, numChips, chipIdx)
-        ? { fill: chipColor }
-        : { fill: ABSENT };
-    }
-    return ownsWRow(strategy, chipIdx, r, numChips, E)
-      ? { fill: chipColor }
-      : { fill: ABSENT };
+  const deviceX = (d) => left + d * (deviceWidth + DEVICE_GAP);
+  return {
+    size,
+    tensorWidth,
+    tallHeight,
+    deviceWidth,
+    tensorX,
+    deviceX,
+    height: HEADER_HEIGHT + tallHeight + LABEL_HEIGHT,
+    cellX: (device, tensor, c) => deviceX(device) + tensorX[tensor] + c * pitch,
+    cellY: (tensor, r) => tensorY[tensor] + r * pitch,
   };
-
-  const yFill = (r, c) => {
-    if (strategy === 'tp-row') {
-      if (reduced) {
-        return ownsContiguousShard(c, E, numChips, chipIdx)
-          ? { fill: chipColor }
-          : { fill: ABSENT };
-      }
-      return { fill: chipColor, stripe: true };
-    }
-    if (strategy === 'tp-col') {
-      if (gathered) return { fill: YELLOW };
-      return ownsContiguousShard(c, E, numChips, chipIdx)
-        ? { fill: chipColor }
-        : { fill: ABSENT };
-    }
-    if (strategy === 'fsdp' && !materialized) {
-      return { fill: ABSENT };
-    }
-    return ownsBatchRow(strategy, chipIdx, numChips, B, r)
-      ? { fill: chipColor }
-      : { fill: ABSENT };
-  };
-
-  return { xFill, wFill, yFill };
 }
 
-function Chip({ chipIdx, numChips, strategy, B, E, materialized, reduced, gathered }) {
-  const { xFill, wFill, yFill } = getFills({
-    strategy,
-    chipIdx,
-    numChips,
-    B,
-    E,
-    materialized,
-    reduced,
-    gathered,
-  });
-  const maxRows = Math.max(B, E);
-  const containerHeight = maxRows * CELL + (maxRows - 1) * GAP;
-
+function DeviceFrame({ device, m }) {
+  const slots = [
+    ['X', T],
+    ['W', E],
+    ['Y', T],
+  ];
+  const x = m.deviceX(device);
+  const symbolY = HEADER_HEIGHT + m.tallHeight / 2 + 5;
   return (
-    <div
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 10,
-        padding: '10px 8px',
-        borderRadius: 14,
-        background: CARD_BG,
-        border: `1px solid ${CARD_BORDER}`,
-        alignItems: 'center',
-      }}
-    >
-      <div
-        style={{
-          fontSize: 10,
-          letterSpacing: '0.12em',
-          textTransform: 'uppercase',
-          color: INK_SOFT,
-          fontWeight: 600,
-        }}
-      >
-        Chip {chipIdx}
-      </div>
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 3 }}>
-        <TensorGrid name="X" rows={B} cols={E} getFill={xFill} containerHeight={containerHeight} />
-        <OpSymbol containerHeight={containerHeight}>@</OpSymbol>
-        <TensorGrid name="W" rows={E} cols={E} getFill={wFill} containerHeight={containerHeight} />
-        <OpSymbol containerHeight={containerHeight}>=</OpSymbol>
-        <TensorGrid name="Y" rows={B} cols={E} getFill={yFill} containerHeight={containerHeight} />
-      </div>
-    </div>
+    <g>
+      <text x={x + m.deviceWidth / 2} y={13} textAnchor="middle">
+        Device {device}
+      </text>
+      {slots.flatMap(([tensor, rows]) =>
+        Array.from({ length: rows * E }, (_, i) => (
+          <Slot
+            key={`${tensor}-${i}`}
+            x={m.cellX(device, tensor, i % E)}
+            y={m.cellY(tensor, Math.floor(i / E))}
+            size={m.size}
+          />
+        )),
+      )}
+      {slots.map(([tensor]) => (
+        <text
+          key={tensor}
+          x={x + m.tensorX[tensor] + m.tensorWidth / 2}
+          y={HEADER_HEIGHT + m.tallHeight + 17}
+          textAnchor="middle"
+        >
+          {tensor}
+        </text>
+      ))}
+      <text className="pd-symbol" x={x + m.tensorX.W - SYMBOL_WIDTH / 2} y={symbolY} textAnchor="middle">
+        @
+      </text>
+      <text className="pd-symbol" x={x + m.tensorX.Y - SYMBOL_WIDTH / 2} y={symbolY} textAnchor="middle">
+        =
+      </text>
+    </g>
   );
 }
 
-function LegendDot({ color, label }) {
-  return (
-    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-      <span
-        style={{
-          display: 'inline-block',
-          width: 10,
-          height: 10,
-          background: color,
-          borderRadius: 2,
-          border: '1px solid rgba(31, 41, 55, 0.2)',
-        }}
-      />
-      {label}
-    </span>
-  );
-}
-
-export default function ShardingStage({
-  numChips = 2,
-  strategy = 'dp',
-  B = 4,
-  E = 2,
-  initialMaterialized = false,
-}) {
-  const [materialized, setMaterialized] = useState(initialMaterialized);
-  const [reduced, setReduced] = useState(false);
-  const [gathered, setGathered] = useState(false);
-  const cfg = STRATEGIES[strategy] ?? STRATEGIES.dp;
+export default function ShardingStage({ strategy = 'dp' }) {
+  const config = STRATEGIES[strategy];
+  const [step, setStep] = useState(0);
+  const { ref, width, animated } = useFigureWidth();
+  const m = measure(width);
+  const cells = config.cells(step);
 
   return (
-    <div
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 14,
-        padding: '20px 16px',
-        borderRadius: 16,
-        background: 'rgba(255, 255, 255, 0.18)',
-        border: `1px solid ${CARD_BORDER}`,
-        margin: '28px 0',
-        color: INK,
-      }}
-    >
-      <div style={{ textAlign: 'center', fontSize: 13, color: INK }}>
-        <strong style={{ letterSpacing: '0.04em' }}>{cfg.label}</strong>
-        <span style={{ color: INK_SOFT }}> — {cfg.blurb}</span>
-      </div>
-
-      <div style={{ display: 'flex', gap: 6, justifyContent: 'center', flexWrap: 'wrap' }}>
-        {Array.from({ length: numChips }, (_, i) => (
-          <Chip
-            key={i}
-            chipIdx={i}
-            numChips={numChips}
-            strategy={strategy}
-            B={B}
-            E={E}
-            materialized={materialized}
-            reduced={reduced}
-            gathered={gathered}
+    <Figure figureRef={ref} animated={animated}>
+      <DiagramSvg width={width} height={m.height} label={config.label}>
+        {DEVICES.map((d) => (
+          <DeviceFrame key={d} device={d} m={m} />
+        ))}
+        {cells.map((cell) => (
+          <Cell
+            key={cell.key}
+            x={m.cellX(cell.device, cell.tensor, cell.c)}
+            y={m.cellY(cell.tensor, cell.r)}
+            size={m.size}
+            fill={cell.fill}
+            hatched={cell.hatched}
+            opacity={cell.opacity}
+            arriving={cell.arriving}
+            late={cell.late}
           />
         ))}
-      </div>
-
-      {cfg.supportsMaterialize && (
-        <div style={{ display: 'flex', justifyContent: 'center' }}>
-          <button
-            onClick={() => setMaterialized((v) => !v)}
-            style={{
-              padding: '8px 18px',
-              borderRadius: 8,
-              background: materialized ? YELLOW : 'rgba(255, 255, 255, 0.4)',
-              color: INK,
-              border: `1px solid ${CARD_BORDER}`,
-              fontSize: 13,
-              cursor: 'pointer',
-              fontWeight: 500,
-              transition: 'background 200ms ease',
-            }}
-          >
-            {materialized ? 'Re-shard W' : 'All-gather W (materialize)'}
-          </button>
-        </div>
+      </DiagramSvg>
+      <Legend items={config.legend} />
+      {config.lines.length > 0 && (
+        <>
+          <StepLine lines={config.lines} step={step} />
+          <StepControls step={step} total={config.lines.length} onStep={setStep} />
+        </>
       )}
-
-      {cfg.supportsReduce && (
-        <div style={{ display: 'flex', justifyContent: 'center' }}>
-          <button
-            onClick={() => setReduced((v) => !v)}
-            style={{
-              padding: '8px 18px',
-              borderRadius: 8,
-              background: reduced ? 'rgba(37, 99, 235, 0.25)' : 'rgba(255, 255, 255, 0.4)',
-              color: INK,
-              border: `1px solid ${reduced ? 'rgba(37, 99, 235, 0.45)' : CARD_BORDER}`,
-              fontSize: 13,
-              cursor: 'pointer',
-              fontWeight: 500,
-              transition: 'background 200ms ease, border 200ms ease',
-            }}
-          >
-            {reduced ? 'Undo reduce-scatter' : 'Reduce-scatter Y'}
-          </button>
-        </div>
-      )}
-
-      {cfg.supportsGather && (
-        <div style={{ display: 'flex', justifyContent: 'center' }}>
-          <button
-            onClick={() => setGathered((v) => !v)}
-            style={{
-              padding: '8px 18px',
-              borderRadius: 8,
-              background: gathered ? YELLOW : 'rgba(255, 255, 255, 0.4)',
-              color: INK,
-              border: `1px solid ${CARD_BORDER}`,
-              fontSize: 13,
-              cursor: 'pointer',
-              fontWeight: 500,
-              transition: 'background 200ms ease',
-            }}
-          >
-            {gathered ? 'Undo all-gather' : 'All-gather Y'}
-          </button>
-        </div>
-      )}
-
-      <div
-        style={{
-          display: 'flex',
-          gap: 18,
-          justifyContent: 'center',
-          fontSize: 11,
-          color: INK_SOFT,
-          flexWrap: 'wrap',
-        }}
-      >
-        {cfg.legend.map((key) => (
-          <LegendDot key={key} color={SWATCHES[key].color} label={SWATCHES[key].label} />
-        ))}
-      </div>
-    </div>
+    </Figure>
   );
 }

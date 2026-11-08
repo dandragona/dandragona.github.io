@@ -1,0 +1,342 @@
+.pd-figure {
+  margin: 2.25rem 0;
+  color: #292524;
+  font-size: 0.875rem;
+  line-height: 1.45;
+  overflow-wrap: normal;
+}
+
+.pd-svg {
+  display: block;
+  max-width: 100%;
+  overflow: visible;
+}
+
+.pd-svg text {
+  fill: #292524;
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.pd-svg text.pd-symbol {
+  font-size: 16px;
+}
+
+.pd-animated .pd-cell {
+  transition: transform 550ms cubic-bezier(0.4, 0, 0.2, 1), opacity 300ms ease;
+}
+
+.pd-animated .pd-cell-arriving {
+  transition: transform 550ms cubic-bezier(0.4, 0, 0.2, 1), opacity 120ms ease 450ms;
+}
+
+.pd-animated .pd-cell-jump {
+  transition: opacity 300ms ease;
+}
+
+.pd-animated .pd-cell-jump.pd-cell-arriving {
+  transition: opacity 120ms ease 450ms;
+}
+
+.pd-animated .pd-cell-fill {
+  transition: fill 300ms ease;
+}
+
+.pd-animated .pd-cell-hatch {
+  transition: opacity 300ms ease;
+}
+
+.pd-animated .pd-cell-late .pd-cell-fill {
+  transition: fill 300ms ease 450ms;
+}
+
+.pd-animated .pd-cell-late .pd-cell-hatch {
+  transition: opacity 300ms ease 450ms;
+}
+
+.pd-animated .pd-cell-late .pd-cell-label {
+  animation: pd-fade-in 200ms ease 450ms both;
+}
+
+@keyframes pd-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* A dark outline drawn under the fill keeps white numbers readable on hatching. */
+.pd-svg text.pd-cell-label {
+  fill: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  paint-order: stroke;
+  stroke: rgba(41, 37, 36, 0.75);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+
+.pd-svg text.pd-cell-label-ink {
+  fill: #292524;
+  font-weight: 400;
+  stroke: none;
+}
+
+.pd-svg text.pd-on-dark {
+  fill: #f5efe9;
+}
+
+.pd-svg text.pd-small {
+  font-size: 11px;
+}
+
+/* Timeline blocks change length between steps. */
+.pd-animated .pd-block {
+  transition: width 550ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.pd-animated .pd-fade {
+  transition: opacity 300ms ease;
+}
+
+.pd-step-line {
+  display: grid;
+  max-width: 36rem;
+  margin: 0.9rem auto 0;
+  text-align: center;
+}
+
+.pd-step-line > span {
+  grid-area: 1 / 1;
+  visibility: hidden;
+}
+
+.pd-step-line > span.is-current {
+  visibility: visible;
+}
+
+.pd-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  margin-top: 0.9rem;
+}
+
+.pd-count {
+  min-width: 3rem;
+  text-align: center;
+}
+
+.pd-button {
+  min-width: 6.5rem;
+  min-height: 44px;
+  padding: 0.4rem 0.8rem;
+  border: 1px solid rgba(41, 37, 36, 0.4);
+  border-radius: 6px;
+  background: transparent;
+  color: #292524;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.pd-button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+.pd-button:disabled {
+  border-color: rgba(41, 37, 36, 0.2);
+  color: rgba(41, 37, 36, 0.45);
+  cursor: default;
+}
+
+.pd-button-next {
+  border-color: #292524;
+  background: #292524;
+  color: #f5efe9;
+}
+
+.pd-button-next:hover:not(:disabled) {
+  background: #44403c;
+}
+
+.pd-legend {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.4rem 1.25rem;
+  margin-top: 0.75rem;
+}
+
+.pd-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.pd-swatch {
+  width: 0.8rem;
+  height: 0.8rem;
+  border-radius: 2px;
+}
+
+.pd-swatch-dashed {
+  width: 0;
+  height: 1rem;
+  margin: 0 0.3rem;
+  border-left: 1.5px dashed #292524;
+  border-radius: 0;
+}
+
+.pd-swatch-hatched {
+  background-image: repeating-linear-gradient(
+    45deg,
+    rgba(255, 255, 255, 0.6) 0 2px,
+    transparent 2px 5px
+  );
+}
+
+.pd-toggle-group {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 1rem;
+}
+
+.pd-toggle {
+  min-height: 44px;
+  padding: 0.4rem 0.9rem;
+  border: 1px solid rgba(41, 37, 36, 0.4);
+  background: transparent;
+  color: #292524;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.pd-toggle:first-child {
+  border-radius: 6px 0 0 6px;
+}
+
+.pd-toggle:last-child {
+  border-left: none;
+  border-radius: 0 6px 6px 0;
+}
+
+.pd-toggle:hover:not([aria-pressed='true']) {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+.pd-toggle[aria-pressed='true'] {
+  border-color: #292524;
+  background: #292524;
+  color: #f5efe9;
+}
+
+.pd-sliders {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: 0.9rem 1.5rem;
+  margin-bottom: 1.75rem;
+}
+
+.pd-slider {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.pd-slider-head,
+.pd-bar-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.pd-slider-value {
+  font-weight: 600;
+}
+
+.pd-slider input {
+  width: 100%;
+  min-height: 32px;
+  margin: 0;
+  accent-color: #292524;
+  touch-action: manipulation;
+}
+
+.pd-bars {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.pd-bar-row {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.pd-bar-formula {
+  margin-left: 0.4rem;
+  opacity: 0.7;
+}
+
+.pd-bar-track {
+  display: block;
+  height: 0.9rem;
+  border-radius: 3px;
+  background: rgba(41, 37, 36, 0.08);
+}
+
+.pd-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: #44403c;
+  transition: width 300ms ease;
+}
+
+.pd-bar-axis {
+  position: relative;
+  height: 1.2rem;
+  margin-top: -0.3rem;
+  font-size: 0.75rem;
+  opacity: 0.75;
+}
+
+.pd-bar-axis > span {
+  position: absolute;
+  top: 0;
+}
+
+.pd-bar-axis > span:not(:first-child) {
+  transform: translateX(-50%);
+}
+
+.pd-bar-note {
+  margin: 0;
+  font-size: 0.75rem;
+  opacity: 0.75;
+  text-align: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pd-bar-fill {
+    transition: none;
+  }
+
+  .pd-animated .pd-cell,
+  .pd-animated .pd-cell-arriving,
+  .pd-animated .pd-cell-jump,
+  .pd-animated .pd-cell-jump.pd-cell-arriving,
+  .pd-animated .pd-cell-fill,
+  .pd-animated .pd-cell-hatch,
+  .pd-animated .pd-cell-late .pd-cell-fill,
+  .pd-animated .pd-cell-late .pd-cell-hatch,
+  .pd-animated .pd-block,
+  .pd-animated .pd-fade {
+    transition: none;
+  }
+
+  .pd-animated .pd-cell-late .pd-cell-label {
+    animation: none;
+  }
+}
