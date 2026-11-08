@@ -1,30 +1,45 @@
 --- 
 import '../styles/global.css';
+import 'katex/dist/katex.min.css';
 
 export interface Props {
 	title: string;
+	description?: string;
+	pageType?: 'website' | 'article';
 	hideNav?: boolean;
 	fullWidth?: boolean;
 }
 
-const { title, hideNav = false, fullWidth = false } = Astro.props;
+const {
+	title,
+	description = 'Daniel Mandragona\'s personal website.',
+	pageType = 'website',
+	hideNav = false,
+	fullWidth = false,
+} = Astro.props;
+const canonicalUrl = new URL(Astro.url.pathname, Astro.site ?? Astro.url.origin);
 ---
 
 <!doctype html>
 <html lang="en">
 	<head>
 		<meta charset="UTF-8" />
-		<meta name="description" content="Astro description" />
+		<meta name="description" content={description} />
 		<meta name="viewport" content="width=device-width" />
 		<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+		<link rel="canonical" href={canonicalUrl} />
 		<meta name="generator" content={Astro.generator} />
+		<meta property="og:type" content={pageType} />
+		<meta property="og:title" content={title} />
+		<meta property="og:description" content={description} />
+		<meta property="og:url" content={canonicalUrl} />
+		<meta name="twitter:card" content="summary" />
+		<meta name="twitter:title" content={title} />
+		<meta name="twitter:description" content={description} />
 		<title>{title}</title>
-		<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css" integrity="sha384-5TcZemv2l/9On385z///+d7MSYlvIEw9FuZTIdZ14vJLqWphw7e7ZPuOiCHJcFCP" crossorigin="anonymous">
-		<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.js" integrity="sha384-cMkvdD8LoxVzGF/RPUKAcvmm49FQ0oxwDF3BGKtDXcEc+T1b2N+teh/OJfpU0jr6" crossorigin="anonymous"></script>
-		<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/contrib/auto-render.min.js" integrity="sha384-hCXGrW6PitJEwbkoStFjeJxv+fSOOQKOPbJxSfM6G5sWZjAyWhXiTIIAmQqnlLlh" crossorigin="anonymous" onload="renderMathInElement(document.body);"></script>
 	</head>
 	<body>
-		<div class="progress-container">
+		<div class="progress-container" aria-hidden="true">
 			<div class="progress-bar" id="myBar"></div>
 		</div>
 		{!hideNav && (
@@ -41,10 +56,12 @@ const { title, hideNav = false, fullWidth = false } = Astro.props;
 			function updateProgressBar() {
 				const winScroll = document.body.scrollTop || document.documentElement.scrollTop;
 				const height = document.documentElement.scrollHeight - document.documentElement.clientHeight;
-				const scrolled = (winScroll / height) * 100;
-				document.getElementById("myBar").style.width = scrolled + "%";
+				const scrolled = height > 0 ? (winScroll / height) * 100 : 0;
+				const bar = document.getElementById("myBar");
+				if (bar) bar.style.width = scrolled + "%";
 			}
-			window.addEventListener('scroll', updateProgressBar);
+			window.addEventListener('scroll', updateProgressBar, { passive: true });
+			updateProgressBar();
 		</script>
 	</body>
 <style>
@@ -61,7 +78,9 @@ const { title, hideNav = false, fullWidth = false } = Astro.props;
 	}
 
 	.container {
-		max-width: 800px;
+		box-sizing: border-box;
+		width: 100%;
+		max-width: 880px;
 		margin: 0 auto;
 		padding: 40px;
 		color: white;
@@ -131,6 +150,24 @@ const { title, hideNav = false, fullWidth = false } = Astro.props;
 	@media (max-width: 768px) {
 		.container {
 			padding: 20px;
+		}
+
+		nav {
+			top: 28px;
+			left: 20px;
+		}
+
+		nav a {
+			font-size: 1.1rem;
+			margin-right: 18px;
+		}
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		nav a,
+		nav a::after {
+			animation: none;
+			transition: none;
 		}
 	}
 </style>

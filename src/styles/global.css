@@ -5,8 +5,22 @@ body {
     color: #c0ddbf;
     margin: 0;
     padding: 0;
-    
+    min-width: 0;
     font-family: 'Source Code Pro', monospace;
+}
+
+button,
+input,
+select,
+textarea {
+    font: inherit;
+}
+
+button:focus-visible,
+a:focus-visible,
+summary:focus-visible {
+    outline: 3px solid #111827;
+    outline-offset: 3px;
 }
 
 canvas {

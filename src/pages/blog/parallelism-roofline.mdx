@@ -1,198 +1,262 @@
 ---
 layout: ../../layouts/BlogPostLayout.astro
 title: "Parallelism by the Roofline"
-pubDate: 2026-05-10
-description: "Five strategies, one roofline. A visual walk through data, FSDP, tensor, context, and expert parallelism — and the roofline that decides when each one pays off."
+pubDate: 2026-11-07
+description: "Seven ways to split an LLM training step across devices, compared by what they split, what they move, and how much work they do per value moved."
 ---
-import CollectivePrimer from '../../components/parallelism/CollectivePrimer.jsx';
+import Collective from '../../components/parallelism/Collective.jsx';
 
-import ShardingStage from '../../components/parallelism/ShardingStage.jsx';
+import DeviceMesh from '../../components/parallelism/DeviceMesh.jsx';
 
-import OverlapTimeline from '../../components/parallelism/OverlapTimeline.jsx';
+import ExpertRouting from '../../components/parallelism/ExpertRouting.jsx';
 
-import TpStaircase from '../../components/parallelism/TpStaircase.jsx';
+import MatmulExample from '../../components/parallelism/MatmulExample.jsx';
+
+import RatioExplorer from '../../components/parallelism/RatioExplorer.jsx';
 
 import RingAttention from '../../components/parallelism/RingAttention.jsx';
 
+import ShardingStage from '../../components/parallelism/ShardingStage.jsx';
+
+import Timeline from '../../components/parallelism/Timeline.jsx';
+
+import TpPair from '../../components/parallelism/TpPair.jsx';
+
 import UlyssesAttention from '../../components/parallelism/UlyssesAttention.jsx';
 
-import EpAllToAll from '../../components/parallelism/EpAllToAll.jsx';
+Training a large model means splitting each step across many devices. Those devices then have to exchange data, and that communication can limit how fast the step runs. This post covers seven ways to split the work and what each one has to move.
 
-import EpRing from '../../components/parallelism/EpRing.jsx';
-
-A training step is a fight over three budgets: memory per device, compute per device, and communication between devices. Every parallelism strategy is a different way of paying those budgets for the same arithmetic.
-
-To keep the strategies comparable, we use a single example. Most of the post comes back to one linear layer:
+Most of the post uses one linear layer as its example:
 
 $$
-X[B, E] \; @ \; W[E, E] \rightarrow Y[B, E]
+X[T, E] \; @ \; W[E, E] \rightarrow Y[T, E]
 $$
 
-The cost is roughly $2 B E^2$ floating point operations. That is the compute we want to keep the hardware fed with as we spread it across devices.
+<MatmulExample client:visible />
 
-Three letters carry the whole post. $B$ is the per-step **batch** — the number of rows of $X$, i.e. the tokens processed together. $E$ is the **hidden dimension**, the width shared by $X$ and $W$ and the axis the matmul contracts over. And $P$ — which shows up the moment we start splitting work across hardware — is the **number of devices** a given axis is spread across. A matmul's cost grows with $B$ and with $E^2$; a collective's cost grows with whatever it has to move. Every "useful ratio" below is just those two growth rates raced against each other.
+$X$ is the input, $W$ is the weights, and $Y$ is the output. $T$ is the number of token rows, and $E$ is the hidden width. This matmul takes about $2TE^2$ operations. The backward pass computes two more matmuls of the same size, for $\partial X$ and $\partial W$, so a training step takes about $6TE^2$. We split this work across $P$ devices.
 
-The question every strategy answers in its own way:
+A *roofline* analysis bounds a device's speed by two limits: its peak compute rate, and the rate at which data can reach it. The lower limit sets the speed. The original roofline model used memory bandwidth for the second limit, and here we use the network. To see which limit is likely to apply, each section works out one ratio:
 
-> What is split, what is replicated, what communication repairs the split, and can that communication be hidden under matmul compute?
+$$
+\frac{\text{operations per device}}{\text{values moved per device}}
+$$
 
-The "communication" piece is always one of a small set of collectives: **all-gather**, **reduce-scatter**, **all-reduce**, and **all-to-all**. See the [appendix](#appendix-the-collectives) to get an intuitive feel for these collectives.
+We count one layer over a full training step. A higher ratio means each value moved supports more computation. The network becomes the limit when the ratio falls below the device's peak operations per second divided by the values per second its network delivers. The counts are rough and drop small factors such as $(P-1)/P$, so they show how a method responds to changes in $T$, $E$, and $P$ more than exactly where a real system hits that limit.
 
-## Data Parallelism
+Timing matters too. When a transfer overlaps with computation, the two take about as long as the slower one. When computation has to wait for the transfer, they take as long as both combined.
 
-Replicate the weights, split the batch. Each device sees a different slice of $X$'s rows, multiplies by the same $W$, and produces its slice of $Y$:
+Each section covers the same points in the same order: what is split, what moves, whether the transfer can overlap with computation, the ratio, and the limit. A *collective* is a communication operation involving every device in a group, and the [appendix](#appendix-collectives) animates each one.
+
+## Data parallelism
+
+Data parallelism splits the token rows. Every device keeps a full copy of $W$ and processes $T/P$ rows:
+
+$$
+X[T/P, E] \; @ \; W[E, E] \rightarrow Y[T/P, E]
+$$
 
 <ShardingStage strategy="dp" client:visible />
 
-Across chips, every $W$ is identical; each chip owns a different chunk of the batch dimension. The forward pass is literally just parallelized. A repair step comes at the end: the gradients of the replicated $W$ must take into account the full batch (which we sharded across devices), so an [all-reduce](#collective-all-reduce) of $\partial W$ fixes this.
+Nothing moves in the forward pass. In the backward pass, each device gets a different gradient $\partial W$ because it saw different rows. The devices combine their gradients with an [all-reduce](#all-reduce), which sums values across devices and gives every device the result.
 
-The win is throughput, not memory. Every device still stores the full model, the full gradient, and the full optimizer state.
+These all-reduces can overlap with computation. Only the optimizer needs the summed gradient, and it runs at the end of the step, so each all-reduce can run while the backward pass continues through earlier layers. The last all-reduce has no computation left to overlap with.
 
-That backward-pass all-reduce of $\partial W$ is DP's only cross-device cost, and — as the timeline at the end of this section shows — most of it can be hidden under compute.
+<Timeline schedule="dp" client:visible />
 
-The useful ratio is $B / P$. The forward pass costs nothing across devices — each chip just multiplies its own rows by its own copy of $W$. The bill comes on the backward pass: because every chip computed $\partial W$ from a different slice of the batch, the chips must agree on a single summed gradient, and that agreement is the all-reduce of $\partial W$. Here is the asymmetry that decides everything. The per-chip compute is $\sim 2 B E^2 / P$: the layer's matmul is the $\sim 2 B E^2$ FLOPs from above, and splitting the batch across $P$ devices leaves each one with $B / P$ rows of work. But the gradient being all-reduced is "closer to $E^2$" — $\partial W$ has the same shape as $W$, an $E \times E$ grid of numbers, and that size does not depend on the batch at all. So as you add devices, the compute on each chip shrinks (it carries the $B$) while the collective does not (it carries only $E^2$). DP therefore wants $B / P$ large enough that the local matmul stays well above the collective it has to hide.
+Each device computes $\sim 6TE^2/P$ operations, and an all-reduce moves $\sim 2E^2$ values per device, so the ratio is about $3T/P$.
 
-That all-reduce need not stall the backward pass. Walk two layers, $X \to Y_1 \to Y_2$: computing layer 1's activation gradient $\partial Y_1 = \partial Y_2 \, W_2^{\top}$ needs only the local $\partial Y_2$ and the chip's own replica of $W_2$ — not the reduced $\partial W_2$, which the optimizer only consumes at the very end of the step. So each layer's $\partial W$ all-reduce can fire and run *concurrently* with the next layer's backward compute, hiding underneath it. The timeline below shows that staircase — comm streams tucked behind compute, layer by layer. The one all-reduce that *can't* hide is the first layer's — its $\partial W$ is produced last in the backward walk, with no further backward compute to tuck it under, so a small tail stays exposed at the end of every step, and real implementations bucket gradients to keep that tail short.
-
-<OverlapTimeline strategy="dp" client:visible />
+The limit is memory. Splitting rows reduces the activations each device stores, but every device still stores all of the weights, gradients, and optimizer state.
 
 ## FSDP
 
-Stop replicating. The batch is still sharded as in DP, but now $W$ is sliced too — each chip stores only a strip of $W$'s rows. In the picture below, $Y$ starts empty: chip $i$ has its $X$ slice and its $W$ shard, but it cannot compute its $Y$ yet — the matmul $X_i @ W_i$ doesn't even compose. We must [all-gather](#collective-all-gather) $W$ to materialize the full $W$ on every chip; only then can each chip produce its batch slice of $Y$.
+Fully sharded data parallelism (FSDP) splits the rows the same way, and also splits the weights, gradients, and optimizer state. A device stores only $E^2/P$ of a layer's weights. To run the layer, the devices use an [all-gather](#all-gather), which gives every device all of the pieces, to build a temporary full copy of $W$.
 
 <ShardingStage strategy="fsdp" client:visible />
 
-The mental model that makes this work: at any moment, only one or two units are *materialized* (yellow in the picture above) — a unit being whatever granularity you wrap, often a layer or a small group of them. The other many units stay sharded. Memory shrinks by the shard count.
+Each layer has three transfers: an all-gather of $W$ in the forward pass, another in the backward pass, and a [reduce-scatter](#reduce-scatter) of $\partial W$, which sums values across devices and leaves each device with one piece of the result. Together, they move about 1.5 times as much data as data parallelism's all-reduce. Keeping the gathered $W$ through the backward pass removes one all-gather but uses more memory.
 
-The performance question is whether the gather for layer $N{+}1$ can finish while layer $N$ is still computing. The timeline below starts in the **naive** schedule — each matmul waits for its all-gather to land, leaving big idle gaps in the compute stream. Click *Overlapped* to slide the gathers underneath the matmuls: the compute stream becomes continuous and the step takes roughly half as long.
+A device can gather the next layer's weights while it computes the current layer. If the gather finishes first, computation never waits for it. Only the first gather and the last reduce-scatter have no computation to overlap with.
 
-<OverlapTimeline strategy="fsdp" client:visible />
+<Timeline schedule="fsdp" client:visible />
 
-The same per-unit all-gather will return in the backward pass — computing $\partial X$ also needs the full $W$ — so the backward pass either repeats the gather or reuses a forward-cached copy.
+Compute is the same as data parallelism, $\sim 6TE^2/P$. The three transfers move $\sim 3E^2$ values, so the ratio is about $2T/P$.
 
-The useful ratio is $B / P$ — the same as DP. Per-layer compute is again $\sim 2 B E^2 / P$: the $\sim 2 B E^2$ matmul, split $P$ ways. The communication is the all-gather that rebuilds $W$ before the layer can run — and although each chip stores only its $\sim E^2 / P$ row-strip, the all-gather has to deliver the *whole* $E \times E$ weight to every chip, so the volume that actually moves is $\sim E^2$, the size of $W$ itself. That does not shrink as you add devices, exactly like DP's all-reduce of $\partial W$. Race the $\sim 2 B E^2 / P$ compute against the $\sim E^2$ collective and you land on $B / P$ again. So FSDP does *not* win a better compute-versus-communication race than DP — if anything it pays a little more, roughly one and a half of these collectives per layer once you count the backward pass (gather $W$ going forward; gather $W$ again and reduce-scatter $\partial W$ going back). What it buys is **memory**: the same roofline as DP, but with the model, gradients, and optimizer state sharded $P$ ways instead of replicated on every chip. As in DP, you want the per-chip batch $B / P$ large enough that each matmul stays well above the gather it has to hide.
+FSDP saves memory but moves 1.5 times as much data. The limit is that a device must hold one layer's full weights while the layer runs, plus the next layer's when gathering ahead. With few rows per device, the gathers can also take longer than the compute they overlap with, and computation starts waiting.
 
-## Tensor Parallelism
+## Tensor parallelism
 
-A different shape. Tensor parallelism splits the matrix itself — and there are two dual ways to slice it. Split $W$ by **columns** and the input stays whole; split $W$ by **rows** and the input must arrive already sharded. Real systems use both, in a specific order, and the pairing is the whole trick — so we take them one at a time.
+Tensor parallelism splits a matrix axis instead of the rows, and it has two forms.
 
-The column-parallel linear is the one most readers picture. $X$ is replicated — every chip holds the full input — and each chip keeps the matching columns of $W$:
+A column-parallel layer splits $W$ by output columns. Every device has all of $X$ and computes its own columns of $Y$:
 
 $$
-X \, [B, E] \; @ \; W_i \, [E, E/P] \rightarrow Y_i \, [B, E/P]
+X[T, E] \; @ \; W_i[E, E/P] \rightarrow Y_i[T, E/P]
 $$
-
-$Y_i$ is a clean slice of the output — chip $i$'s columns, exact, no partial sums. The forward pass needs no collective at all, *provided* the next operation is happy consuming a column-sharded $Y$; if it needs the full thing, an [all-gather](#collective-all-gather) rebuilds it. The bill moves to the backward pass, where the input gradient $\partial X$ must be all-reduced across chips.
 
 <ShardingStage strategy="tp-col" client:visible />
 
-The row-parallel linear is the mirror image. Now the *input* is sliced along the contraction dimension $E$ — each chip holds a column slice $X_i$, paired with the matching rows of $W$:
+A row-parallel layer splits $W$ by rows and needs $X$ split by columns to match. Each device computes a full-sized output, but it is only a partial sum. The real $Y$ is the sum across all devices:
 
 $$
-X_i \, [B, E/P] \; @ \; W_i \, [E/P, E] \rightarrow Y^{(i)} \, [B, E]
+X_i[T, E/P] \; @ \; W_i[E/P, E] \rightarrow Y^{(i)}[T, E]
 $$
-
-Notice the shape: $Y^{(i)}$ is the *full* output, not a slice. But it is a **partial sum** — only the $i$-th of $P$ terms in the contraction. None of the chips alone has the correct answer.
 
 <ShardingStage strategy="tp-row" client:visible />
 
-[Reduce-scatter](#collective-reduce-scatter) is exactly the collective the matrix shape demands: a sum across devices that re-shards the output. Above, the collective combines the striped partials and each chip is left with one column of the final $Y$.
+The output of a column-parallel layer is exactly the input a row-parallel layer needs, even with an elementwise nonlinearity between them. So a column-parallel layer followed by a row-parallel layer needs nothing moved between them. It needs one collective at the end, usually an all-reduce, because the layers between pairs need all of $Y$. A reduce-scatter can instead leave each device with some rows of $Y$, as in the diagram above, with an all-gather rebuilding $Y$ before the next pair. This moves the same amount of data, and the layers in between work on $1/P$ of the rows. The backward pass also needs one collective per pair.
 
-Why carry two schemes? Because they compose. Stack a column-parallel linear in front of a row-parallel one and watch the shapes click: the first takes a replicated $X$ and emits a column-sharded intermediate — exactly the $E$-sharded input the second one wants. No collective in between; even an elementwise nonlinearity slots into the gap, since it never mixes columns. The row-parallel layer then produces partial sums, and a single [all-reduce](#collective-all-reduce) finishes the pair. Run either scheme alone and you'd pay a collective per matmul; run them as a pair — Megatron's pattern for every MLP and attention block — and two matmuls cost one. Look back at the two diagrams: the column-parallel widget's resting $Y$ *is* the row-parallel widget's starting $X$, same shards, same colors. That is also the answer to a fair question about the row-parallel picture — "who sharded my input?": nobody, it fell out of the previous layer that way.
+<TpPair client:visible />
 
-In the standalone row-parallel scheme — reduce after every matmul, so the next layer starts from a clean sharded input — we cannot overlap between layers: the next layer's input is exactly the current layer's reduce-scattered output, so there is nothing yet to communicate ahead of. The overlap that remains happens *inside* the layer, with the matmul work split into a staircase that interleaves partial computation with a reduce-scatter on the previous partial. Those chunks split the token rows purely to *pipeline* the work — every chip still holds the full batch; only the hidden dimension $E$ is sharded across devices.
+That final collective normally makes computation wait, because the next layer needs its result. It can overlap if the layer is computed in chunks of rows: each chunk's all-reduce runs while the next chunk computes. The implementation has to split the matmul and start each chunk's transfer as soon as the chunk is done, so this isn't automatic.
 
-<TpStaircase client:visible />
+<Timeline schedule="tp-chunks" client:visible />
 
-The useful ratio is $E / P$. Compute is $\sim 2 B E^2 / P$, since tensor parallelism splits one of $W$'s $E$-sized axes across the $P$ chips — the contraction axis for row-parallel, the output axis for column-parallel. The collective — whichever scheme sends it: the all-gather of $Y$, the reduce-scatter of $Y$, or the pair's single all-reduce — moves an activation of size $\sim B E$ — an output with one entry per (row, hidden-unit) pair, and crucially independent of $P$. Race compute against communication and the $B$ cancels, leaving a factor that scales as $E / P$: a larger hidden dimension $E$ gives the matmul more work to hide the activation exchange behind, while a larger $P$ thins each local matmul and squeezes that margin back down. The column→row pairing halves how often you pay it, but the race itself is unchanged — the ratio is $E/P$ either way.
+For a pair of layers, each device computes $\sim 12TE^2/P$ operations. The pair's two all-reduces, one in each pass, move $\sim 4TE$ values per device. $T$ cancels, so the ratio is about $3E/P$.
 
-## Context Parallelism
+The limit is group size. As $P$ grows, each device's matmul gets narrower, but the activation it has to move stays the same size.
 
-So far the batch has been our only axis to split. But those rows are really tokens laid out along a *sequence*, and a long sequence is its own axis to shard. Tracking it takes on a few more dimensions: input tensors $X[B, S/P, E]$, and $Q,K,V$ tensors $[B, A, S/P, H]$ — where $A$ is the number of attention heads and $H$ the head dimension — sharded across $P$ devices. From here $B$ counts *sequences* rather than individual token rows: a batch element is a whole sequence of $S$ positions, so the total token count is $B \cdot S$. (You will also see this called *sequence parallelism* — the two terms are used interchangeably for sharding the sequence axis. Confusingly, in Megatron *sequence parallelism* also names a narrower trick that shards only the norm and dropout layers.) The diagrams below drop the leading batch axis $B$ — it rides along untouched and only clutters the transposes that matter — so each grid is the $[S, E]$ face of a single batch element: the sequence $S$ runs down the rows, and every device owns a horizontal band of $S/P$ of them.
+## Context parallelism
 
-For the dense layers, the split is free. A linear layer treats every token independently, so sharding the sequence is just data parallelism wearing a different hat — each device multiplies its own tokens by the replicated $W$ with no communication at all. (Free on the forward pass, at least: because $W$ is replicated, the dense layers still owe DP's backward all-reduce of $\partial W$, exactly as in data parallelism.)
+Context parallelism splits sequence positions. With $N$ sequences of length $S$, $T = NS$, and each device holds $S/P$ positions of each sequence. Dense layers treat positions as rows, so they split and communicate like data parallelism.
 
-<ShardingStage strategy="cp" client:visible />
+Attention is different, because each device's queries need keys and values from positions it doesn't hold. Attention tensors have shape $[N, A, S, H]$, where $A$ is the number of heads, $H$ is the head width, and $E = AH$. There are two common ways to provide the missing data.
 
-In order to compute attention, though, every query must attend to every key across the whole sequence — but each device only holds the $Q,K,V$ for its own span. That is what forces communication, and there are two different methods for repairing the split: one streams the missing keys and values past each device a block at a time, the other transposes the sharding so each device holds the whole sequence for a slice of the heads.
+### Ring attention
 
-### Ring Attention
+Ring attention keeps the position split. Each device holds one block of each attention tensor:
 
-Ring attention passes its $K,V$ shard around a ring of devices. At each step, a device attends its local $Q$ shard against whichever $K,V$ block currently sits on it and folds the result into a running output, then forwards that block onward.
+$$
+Q, K, V: [N, A, S/P, H]
+$$
+
+$Q$ stays where it is, and $K,V$ blocks pass from device to device around a ring. Each device computes with every block as it arrives and updates its softmax as it goes, so the output exactly matches full attention. In the diagram, colors show which device each block started on.
 
 <RingAttention client:visible />
 
-The communication hides. Each device forwards its current $K,V$ block to its neighbor *while it is still attending* to that block, so the next hop lands just as the next matmul needs it. The first block is already local — no hop needed to start — and the last block needs no onward send, so with $P-1$ hops tucked under $P$ attention matmuls there is no exposed communication at either end — provided each hop lands inside the matmul that hides it, which is the case where the ratio below is on your side.
+A device can send a block while it computes with that block. This overlap works if each transfer finishes within one block's compute time and the network can carry all of the neighbor transfers at once.
 
-The useful ratio is $S/P$. Each device owns $S/P$ of the positions, so per ring hop its attention compute scales like $B \cdot A \cdot (S/P)^2 \cdot H$ — every one of its local queries attends to the $S/P$ keys in the block it holds — while the $K,V$ block it forwards is only $\sim B \cdot A \cdot (S/P) \cdot H$ numbers. Compute grows with the *square* of the per-device sequence length and communication only linearly, so a longer per-device span (large $S/P$) buys room to hide each hop; adding devices thins the local matmul quadratically but the hop only linearly, squeezing that margin back down. (This draws full, unmasked attention for clarity; under a causal mask the earliest blocks attend to almost nothing and the latest to everything, so production ring attention reorders the sequence — zig-zag or striped assignment — to keep every hop's compute roughly equal.)
+For each block in the forward pass, a device computes $\sim 4NA(S/P)^2H$ operations and sends $\sim 2NA(S/P)H$ values. The backward pass computes and sends about twice as much, so the ratio is about $2S/P$.
 
-### Ulysses Attention
+The limit is balance. With a causal mask, later positions attend to more keys than earlier ones, so compute is uneven unless positions are reassigned across devices.
 
-Ulysses repairs the split with a different collective: an [all-to-all](#collective-all-to-all) that *transposes* the sharded axis. For $Q,K,V$ it turns $[B, A, S/P, H] \rightarrow [B, A/P, S, H]$ — each device trades "my positions, all heads" for "all positions, my head group". Every device can then run full attention locally for its shard of the heads, producing $O[B, A/P, S, H]$; a second all-to-all flips it back to $O[B, A, S/P, H]$, after which the standard multi-head concatenation and output projection return $[B, S/P, E]$.
+### Ulysses attention
+
+Ulysses changes the split so that attention can run locally. An [all-to-all](#all-to-all), in which every device sends a different piece to every other device, swaps the position split for a head split:
+
+$$
+[N, A, S/P, H] \rightarrow [N, A/P, S, H]
+$$
 
 <UlyssesAttention client:visible />
 
-Here there is nothing to overlap. Attention's input is *exactly* the first all-to-all's output, and the next layer's input is *exactly* the second's — the same "nothing to run ahead of" bind that tensor parallelism hit between layers. As drawn, both all-to-alls are hard syncs: every device stalls through the first and again through the second. (A production kernel can chunk the transpose to claw some of that back, but the honest baseline is both all-to-alls fully exposed.)
+Each device now holds every position for $A/P$ heads and computes attention locally. A second all-to-all returns the output to the position split.
 
-So the roofline argument is amortization, not hiding. The exposed traffic is $\sim 4 \cdot B \cdot A \cdot (S/P) \cdot H$ (three tensors out — $Q,K,V$ — and the single output tensor back) against local attention compute of $\sim 4 \cdot B \cdot (A/P) \cdot S^2 \cdot H$ (attention is *two* matmuls, the $QK^{\top}$ scores and the $\cdot V$ that follows). The $P$'s cancel and the ratio scales as $S$: you do not hide the all-to-all, you drown it under attention's $S^2$ growth, and long sequences drown it well. The catch is structural — Ulysses gives each device one head group, so it can shard across at most as many devices as there are heads: $P \le A$ (and $P$ must divide $A$ for an even split; grouped- and multi-query attention, with their handful of $K,V$ heads, tighten the cap further). Head count, not memory, caps its reach.
+Both all-to-alls normally make computation wait: attention can't start until the first finishes, and the next layer can't start until the second finishes. Splitting each exchange into chunks can overlap part of it with computation, but this takes a custom implementation.
 
-Ring and Ulysses split the same job two ways, and the choice between them is the one expert parallelism will meet again. The ring hides all of its communication but ships more of it: a fresh $K,V$ block every hop, $\sim 2 \cdot B \cdot A \cdot S \cdot H$ per device once you sum the ring. Ulysses ships the bare minimum, $\sim 4 \cdot B \cdot A \cdot (S/P) \cdot H$, but pays it fully exposed. That is a factor of $\sim P/2$ more bytes for the ring, traded for hiding every one of them. Long sequences favor drowning the exposed cost (Ulysses) until you run out of heads at $P = A$; past that, only the ring keeps scaling. Both run the same collectives in reverse on the backward pass — the all-to-all sandwich inverts, the ring rotates $\partial K, \partial V$ the other way — and obey the same ratios, so we stay in the forward pass throughout.
+The exchanges move $\sim 4NA(S/P)H$ values per device in each pass: $Q$, $K$, $V$, and the output in the forward pass, and their gradients in the backward pass. Local attention computes $\sim 4N(A/P)S^2H$ operations in the forward pass and about twice that in the backward pass. $P$ cancels, so the ratio is about $1.5S$.
 
-## Expert Parallelism
+The limit is the number of heads. $P$ can't exceed $A$, and the split is only even if $P$ divides $A$. Grouped-query and multi-query attention have fewer $K,V$ heads, which can lower this limit or require a different implementation.
 
-A Mixture-of-Experts layer replaces the single FFN with many, plus a router that sends each token to just one or two of them. The experts will not all fit on one device, so expert parallelism shards them — each device hosts a slice. (The all-to-all widget below draws the simplest case, top-1 routing — exactly one expert per token, so its combine is pure delivery. The all-gather/reduce-scatter widget draws top-2 — two experts per token, their outputs summed — because top-2 is where that method's reduce-scatter earns the "reduce" in its name.) Just like context parallelism, there are two ways to reunite each token with its expert. One is an exact mirror of an attention method — the all-to-all sandwich is Ulysses relabeled. The other echoes ring attention rather than mirroring it: it hides its communication under compute and ships more bytes than its all-to-all sibling, the same trade the ring made, but what it moves is the tokens themselves, gathered to every device — not a $K,V$ block rotating past them.
+Per device, ring attention moves about $P/2$ times more data than Ulysses in the forward pass, and about $P$ times more in the backward pass. But it can overlap those transfers with computation. Ulysses moves less, but computation waits for it. The timeline shows a forward pass on 4 devices.
+
+<Timeline schedule="ring-ulysses" client:visible />
+
+## Expert parallelism
+
+A mixture-of-experts layer has many feed-forward experts, and a router sends each token to $k$ of them. Expert parallelism splits the experts across devices. As in the example, we treat each expert as one $E \times E$ layer. Each device starts with $T/P$ tokens, and there are two ways to bring tokens and experts together. Both diagrams use $k = 2$.
 
 ### All-to-all routing
 
-The first method is an **all-to-all** sandwich, the analogue of Ulysses: dispatch every token to its expert's device, run the expert FFN locally, then combine the outputs back home.
+One all-to-all sends each token to the devices holding its $k$ experts. A second all-to-all returns the outputs. Routes are usually uneven, so the transfers need variable sizes or padding up to a fixed capacity.
 
-<EpAllToAll client:visible />
+<ExpertRouting method="all-to-all" client:visible />
 
-As drawn, both all-to-alls are exposed, for the same reason Ulysses' are: the FFN has no input until dispatch lands, and the combine is a sync on the *slowest* expert — one hot expert stalls everyone behind it. The bet is amortization: each routed token pays an FFN costing $\sim E^2$ (its two $E \times E$ matmuls) while the two all-to-alls only ship its $\sim E$-sized activation there and back, so the ratio scales as $E$ — a wide hidden dimension drowns the round trip, provided the router keeps the experts balanced. Toggle the widget's *one hot expert* mode to watch that proviso fail: the combine can't complete until the overloaded device drains its queue, and everyone else waits.
+Neither transfer overlaps with computation by default. An expert can't start until its tokens arrive, and the combined output has to wait for the slowest expert.
 
-### All-gather / reduce-scatter routing
+Each token-expert pair computes $\sim 2E^2$ operations in the forward pass and $\sim 4E^2$ in the backward pass. Each pass sends the pair's $E$ values out and back, $\sim 4E$ in all. Both counts scale with $k$ and $T/P$, so the ratio is about $1.5E$.
 
-The second method is an **all-gather / reduce-scatter** sandwich, and it inverts the dispatch: instead of sending each token to its expert, send every token to every device. An [all-gather](#collective-all-gather) replicates the token shards so each device holds the full sequence; each device then keeps just the tokens routed to its *own* expert, drops the rest, and runs its expert FFN — the weights never move. A [reduce-scatter](#collective-reduce-scatter) finishes the job, and the *reduce* is not decoration — the widget draws it happening. Under top-2 each token's output is the sum of two contributions living on two different devices: each device produces a full-length output that is zero outside its own expert's rows, and the reduce-scatter sums those summands in flight, landing each token's finished row — one row, not two — back on its home device. (Run the same collective at the all-to-all figure's top-1 and each sum is one real row plus zeros — routing home by arithmetic. The collective doesn't change; the number of genuine summands does.) There is still a ring turning here, because that is how these collectives are built — shards passing neighbor-to-neighbor — but what rides it is tokens, not weights.
+The limit is load balance. When a *hot expert* receives far more than its share of tokens, the whole group waits for that device. The toggle above shows this case.
 
-<EpRing client:visible />
+### All-gather and reduce-scatter routing
 
-Now the communication hides, and it hides because we have seen both of these staircases before: the all-gather chunks and streams exactly like FSDP's all-gather of $W$, the reduce-scatter like tensor parallelism's reduce-scatter of $Y$, each shard's hop tucking under the FFN chunk that overlaps it. The useful ratio is $E/P$. Per device the expert FFN costs $\sim k B S E^2 / P$ — an $\sim E^2$ FFN for each of the $\sim k B S / P$ (token, expert) pairs the router creates — while the two collectives still move $\sim 2 \cdot B S E$: the whole token set in, the whole output set back, neither of them growing with $k$. Race them and the ratio scales as $E/P$ — top-$k$ only fattens the compute side of the race — which is no coincidence: this is tensor parallelism's ratio because this *is* tensor parallelism, with the experts sitting in the sharded-weight seat.
+This method sends every token to every device with an all-gather. Each device computes the tokens routed to its experts, applies the weight the router gave each expert, and writes zeros for all other tokens. A reduce-scatter then sums the contributions and returns each token's result to the device it started on.
 
-The trade against the all-to-all is bytes for exposure — the choice we met with Ulysses and the ring, in new clothes. Per device, the all-to-all ships the minimum, $\sim 2 k \cdot B S E / P$ — each token's $k$ copies to their experts and back — and pays for it fully exposed; the all-gather/reduce-scatter ships $\sim P\times$ more, $\sim 2 \cdot B S E$, but hides every byte under compute, and its neighbor-to-neighbor traffic keeps the network calm where $P^2$ simultaneous all-to-all flows contend for it. One thing it does *not* buy is hot-expert immunity: each device still runs its expert over every token globally routed to it, so a skewed router overloads the hot expert's host exactly as the all-to-all's dispatch does — the imbalance belongs to the routing, and no collective routes around it. The gather holds one further edge: its cost is independent of top-$k$. Every token is gathered once whether it routes to one expert or four, while the all-to-all must dispatch (and combine) $k$ copies — so as $k$ grows, the $\sim P\times$ byte premium shrinks toward $\sim P/k$ and this method pulls ahead. The figure above draws exactly this: eight tokens gathered once, sixteen expert-outputs reduced back to eight rows. Backward is the transpose of forward, just as it was for FSDP and TP: all-gather the output gradients, reduce-scatter the input gradients, same collectives, same ratios.
+<ExpertRouting method="gather-scatter" client:visible />
 
-## Bringing It Together
+Both transfers can overlap with computation if they are chunked: the experts process chunks as they are gathered, and finished chunks go into the reduce-scatter. As with tensor parallelism, the implementation has to start each chunk's transfer as soon as the chunk is ready.
 
-Five strategies, one roofline. Every one of them splits the same $2 B E^2$ matmul across devices, and every one pays for the split with a collective. The whole post is the single question of whether that collective's cost stays under the compute it rides alongside — and each "useful ratio" is just per-device compute scaling divided by collective scaling, the two growth rates raced against each other.
+With balanced routing, each device computes $\sim 6kTE^2/P$ operations. Each pass has a gather and a scatter of $\sim TE$ values, $\sim 4TE$ in all, so the ratio is about $1.5kE/P$.
 
-| Strategy | What it splits | Collective(s) | Hidden under compute? | Useful ratio |
-| --- | --- | --- | --- | --- |
-| Data parallelism | the batch | all-reduce $\partial W$ | yes, bar a small end-of-step tail | $B/P$ |
-| FSDP | the batch **and** the weights | all-gather $W$, reduce-scatter $\partial W$ | yes | $B/P$ |
-| Tensor parallelism | the hidden dimension $E$ | one all-reduce per column→row pair (standalone: reduce-scatter $Y$) | yes, within the layer | $E/P$ |
-| Ring attention | the sequence | $K,V$ ring hops | yes | $S/P$ |
-| Ulysses | sequence $\leftrightarrow$ heads | two all-to-alls | no — amortized under $S^2$ | $S$ |
-| Expert (all-to-all) | the experts | two all-to-alls | no — amortized under $E^2$ | $E$ |
-| Expert (all-gather/reduce-scatter) | the experts | all-gather tokens, reduce-scatter outputs | yes | $E/P$ |
+The limit is data volume. All-to-all routing moves $\sim kTE/P$ values per device in each transfer, so this method moves about $P/k$ times more per device. The gap shrinks as $k$ grows, and it can be smaller in practice, because all-to-all messages share network links and may need padding. Every device also needs room for all $T$ tokens unless chunks are streamed. It doesn't fix load imbalance either, so a hot expert still slows the group.
 
-Two families fall out of the last two columns. The **rings and staircases** — DP, FSDP, TP, ring attention, all-gather/reduce-scatter experts — arrange the work so a collective always has a matmul to hide beneath, and win when the per-device compute is fat enough to cover it. The **all-to-alls** — Ulysses and expert dispatch — have nothing to run ahead of, so they pay the communication in the open and rely on a *superlinear* compute term ($S^2$ for attention, $E^2$ for the FFN) to amortize it away. Either way the knob is the same: keep the quantity that carries the compute — batch per device, hidden dimension, sequence length — large enough that arithmetic outruns the wire.
+## Summary
 
-## Further Reading
+Each method splits different work, so each ratio depends on different numbers.
 
-- [JAX scaling book — training chapter](https://jax-ml.github.io/scaling-book/training/) (the source for much of the roofline framing here)
+| Method | Split | Communication | Overlap | Ratio | Memory saved |
+| --- | --- | --- | --- | --- | --- |
+| Data parallelism | Token rows | All-reduce $\partial W$ | Yes, except the last | $3T/P$ | Activations |
+| FSDP | Token rows, model state | Two all-gathers of $W$, reduce-scatter $\partial W$ | By gathering ahead | $2T/P$ | Activations, model state |
+| Tensor parallelism | Hidden width | One all-reduce per pair in each pass | With chunking | $3E/P$ | Model state, some activations |
+| Ring attention | Positions | Neighbor transfers of $K,V$ | If each send fits in one block's compute | $2S/P$ | Activations |
+| Ulysses attention | Positions, then heads | Two all-to-alls | Not by default | $1.5S$ | Activations |
+| Expert all-to-all | Experts | Two all-to-alls | Not by default | $1.5E$ | Expert weights, activations |
+| Expert gather/scatter | Experts | All-gather, reduce-scatter | With chunking | $1.5kE/P$ | Expert weights |
+
+Overlap and a high ratio help in different ways. Overlap stops a transfer from making computation wait. A high ratio keeps a transfer small compared with the computation, even when computation has to wait. Ulysses and all-to-all routing rely on a high ratio.
+
+<RatioExplorer client:visible />
+
+Move the sliders to see how the ratios respond. The bars use the estimates above, including constants, and ignore hardware and limits on $P$, such as Ulysses needing $P \le A$. They show how the ratios scale, not how fast a real system runs.
+
+## Combining methods
+
+Large training runs use several methods at once. They arrange the devices in a mesh and give each method one axis. Here, 8 devices form a $2 \times 4$ mesh, with tensor parallelism across each row and data parallelism down each column.
+
+<DeviceMesh client:visible />
+
+Each collective runs only within its group. A tensor-parallel collective involves the 4 devices in a row, and a gradient all-reduce involves the 2 devices in a column. Each ratio then depends on its own group size: with $P_t$ devices in a row and $P_d$ in a column, the ratios are about $3E/P_t$ and $3T/P_d$. You can compute each ratio separately, but with a fixed number of devices, growing one group shrinks the other, and both transfers share the network.
+
+## Further reading
+
+- [JAX scaling book: roofline chapter](https://jax-ml.github.io/scaling-book/roofline/)
+- [JAX scaling book: training chapter](https://jax-ml.github.io/scaling-book/training/)
 - [PyTorch FSDP2 `fully_shard`](https://docs.pytorch.org/docs/main/distributed.fsdp.fully_shard.html)
 - [PyTorch Tensor Parallelism](https://docs.pytorch.org/docs/stable/distributed.tensor.parallel)
 - [Ring Attention with Blockwise Transformers (Liu, Zaharia, Abbeel)](https://arxiv.org/abs/2310.01889)
 - [DeepSpeed-Ulysses: sequence parallelism for long-context training](https://arxiv.org/abs/2309.14509)
 - [GShard: scaling giant models with conditional computation and automatic sharding](https://arxiv.org/abs/2006.16668)
 - [Switch Transformers: scaling to trillion-parameter models](https://arxiv.org/abs/2101.03961)
+- [All-gather and reduce-scatter for expert parallelism](https://www.tdcommons.org/dpubs_series/9706/)
 - [NVIDIA NCCL collectives](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/usage/collectives.html)
 - [The Roofline Model](https://www.osti.gov/pages/biblio/1379347-roofline-model-pedagogical-tool-program-analysis-optimization)
 - [Efficient Large-Scale Language Model Training on GPU Clusters Using Megatron-LM](https://www.microsoft.com/en-us/research/publication/efficient-large-scale-language-model-training-on-gpu-clusters/)
 
-## Appendix: The Collectives
+## Appendix: collectives
 
-Every collective the post links to lives here, and all four now earn their place above: all-reduce, all-gather, and reduce-scatter drive DP, FSDP, and TP respectively, while the all-to-all is the workhorse of the expert-parallel routing — and the context-parallel transpose — you just stepped through.
+Every method except ring attention uses these four collectives. Ring attention sends $K,V$ blocks only between neighbors. Each diagram shows 4 devices. The first three use a ring, in which each device sends only to the next device.
 
-Step through each panel; the captions describe what changes between frames.
+### All-gather
 
-<CollectivePrimer client:visible />
+Every device starts with one piece and ends with all of them. Each device receives the $P-1$ pieces it doesn't have.
+
+<Collective kind="all-gather" client:visible />
+
+### Reduce-scatter
+
+Every device starts with its own partial sum of every piece. Each device ends with one piece, summed over all devices. Each device sends $P-1$ pieces.
+
+<Collective kind="reduce-scatter" client:visible />
+
+### All-reduce
+
+Every device ends with the full sum. A ring all-reduce runs a reduce-scatter and then an all-gather, so it moves twice as much data as either one.
+
+<Collective kind="all-reduce" client:visible />
+
+### All-to-all
+
+Every device starts with one piece for each device, and each piece goes to the device it's for. Each device sends $P-1$ pieces and keeps one.
+
+<Collective kind="all-to-all" client:visible />

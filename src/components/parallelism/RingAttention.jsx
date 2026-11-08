@@ -1,185 +1,205 @@
 import { useState } from 'react';
 import {
-  CHIP_COLORS,
-  YELLOW,
-  ABSENT,
-  INK_SOFT,
-  CARD_BG,
-  CARD_BORDER,
-  TensorGrid,
-  OpSymbol,
+  DEVICE_COLORS,
+  INK,
+  useFigureWidth,
+  Figure,
+  DiagramSvg,
+  Slot,
+  Cell,
+  StepLine,
   StepControls,
-  WidgetShell,
-  Caption,
-  Legend,
-} from './staircase-shared.jsx';
+} from './diagram-kit.jsx';
 
-// Ring attention (forward). Four devices, each owning S/P of the sequence.
-// Q stays home; the K,V block rotates one seat around the ring per step. Every
-// step a device attends its queries against the block it currently holds and
-// folds the result into a running (online-softmax) output, while the block it
-// just used is already hopping to the next device. Color = the device a block
-// ORIGINATED on, so a block is traceable as it travels.
+// Four devices in a ring. Q stays on its device while each K,V block moves one
+// device clockwise per step. A block keeps the color of the device it started
+// on. The matrix records which blocks each device has computed with.
 
 const P = 4;
-const SP = 2; // S/P sequence positions per device (H = 2)
+const DEVICES = Array.from({ length: P }, (_, i) => i);
+
 const CELL = 14;
 const GAP = 2;
-const ROW_H = 104;
-const ROW_GAP = 12;
-const TOTAL_STEPS = 5; // 4 folds (0..3) + done (4)
+const BLOCK = 2 * CELL + GAP;
+const NODE_WIDTH = 2 * BLOCK + 12;
+const NODE_HEADER = 16;
+const NODE_HEIGHT = NODE_HEADER + BLOCK + 18;
+const RADIUS_X = 112;
+const RADIUS_Y = 86;
+const RING_WIDTH = 2 * RADIUS_X + NODE_WIDTH;
+const RING_HEIGHT = 2 * RADIUS_Y + NODE_HEIGHT;
 
-// Block resident on device d at step t (blocks move d -> d+1 each hop).
-const resident = (d, t) => (d - t + P) % P;
+const MATRIX_CELL = 24;
+const MATRIX_GAP = 3;
+const MATRIX_PITCH = MATRIX_CELL + MATRIX_GAP;
+const MATRIX_LABEL = 30;
+const MATRIX_HEADER = 40;
+const MATRIX_GRID = P * MATRIX_PITCH - MATRIX_GAP;
+const MATRIX_WIDTH = MATRIX_LABEL + MATRIX_GRID;
+const MATRIX_HEIGHT = MATRIX_HEADER + MATRIX_GRID;
 
-const CAPTIONS = [
-  'Every device attends its own K,V block first — the S/P positions it already holds — so compute starts with no communication. Underneath, each block is already copying to its clockwise neighbor (device 3 wraps to device 0).',
-  'One hop landed: device d now holds block d−1 and folds those keys into its output. O stays striped because the online softmax keeps rescaling as new keys arrive — and the next hop is already in flight beneath the matmul.',
-  'Rotate again — three of the four key blocks are now covered on every device. Each hop so far has finished inside the attention block that hid it; the compute lane never stalled.',
-  'The last block arrives and folds in. There is nothing left to send: the ring needed only P−1 hops, and the first block was local, so there was never an exposed tail either.',
-  'Done. The stripes drop: every O_d is the exact attention output for its queries over the full S=8 sequence, and no device ever held the whole sequence of K,V — only the block it was attending to, plus the next already streaming in.',
+const WIDE_GAP = 48;
+const NARROW_GAP = 24;
+const WIDE_LAYOUT_MIN = RING_WIDTH + WIDE_GAP + MATRIX_WIDTH;
+
+const LINES = [
+  'Each device computes with the K,V block it already holds.',
+  'Every block moves one device clockwise. Each device computes with its new block.',
+  'The blocks move again. Each device has now seen three blocks.',
+  'After three moves, every device has seen all four blocks.',
 ];
 
-// Left rail: the ring drawn as hop arrows between the stacked device rows,
-// plus a wraparound from the bottom device back to the top. Yellow while a hop
-// is in flight (steps 0..P-2), faint once the ring goes quiet.
-function RingRail({ active }) {
-  const W = 48;
-  const H = P * ROW_H + (P - 1) * ROW_GAP;
-  const cy = (d) => d * (ROW_H + ROW_GAP) + ROW_H / 2;
-  const col = active ? YELLOW : 'rgba(31,41,55,0.22)';
-  const x = 34;
-  const downTip = (px, py) => `${px - 4},${py - 8} ${px + 4},${py - 8} ${px},${py}`;
-  const upTip = (px, py) => `${px - 4},${py + 8} ${px + 4},${py + 8} ${px},${py}`;
+// Blocks move from device d to device d + 1 at each step.
+const holder = (block, step) => (block + step) % P;
+const stepSeen = (device, block) => (device - block + P) % P;
 
+function measure(width) {
+  const wide = width >= WIDE_LAYOUT_MIN;
+  const ringX = (width - (wide ? WIDE_LAYOUT_MIN : RING_WIDTH)) / 2;
+  const centerX = ringX + RING_WIDTH / 2;
+  const centerY = RING_HEIGHT / 2;
+  return {
+    height: wide ? RING_HEIGHT : RING_HEIGHT + NARROW_GAP + MATRIX_HEIGHT,
+    matrixX: wide ? ringX + RING_WIDTH + WIDE_GAP : (width - MATRIX_WIDTH) / 2,
+    matrixY: wide ? (RING_HEIGHT - MATRIX_HEIGHT) / 2 : RING_HEIGHT + NARROW_GAP,
+    centers: [
+      [centerX, centerY - RADIUS_Y],
+      [centerX + RADIUS_X, centerY],
+      [centerX, centerY + RADIUS_Y],
+      [centerX - RADIUS_X, centerY],
+    ],
+  };
+}
+
+function blockOrigin(center, kv) {
+  return [center[0] - NODE_WIDTH / 2 + (kv ? BLOCK + 12 : 0), center[1] - NODE_HEIGHT / 2 + NODE_HEADER];
+}
+
+const blockCell = (i) => [(i % 2) * (CELL + GAP), Math.floor(i / 2) * (CELL + GAP)];
+
+// Top and bottom devices send from a side edge to a neighbor's top or bottom
+// edge. Side devices do the reverse.
+function hopEnds(device, centers) {
+  const from = centers[device];
+  const to = centers[(device + 1) % P];
+  const dx = Math.sign(to[0] - from[0]);
+  const dy = Math.sign(to[1] - from[1]);
+  const clearX = NODE_WIDTH / 2 + 4;
+  const clearY = NODE_HEIGHT / 2 + 4;
+  return device % 2 === 0
+    ? [from[0] + dx * clearX, from[1], to[0], to[1] - dy * clearY]
+    : [from[0], from[1] + dy * clearY, to[0] - dx * clearX, to[1]];
+}
+
+function Hop({ ends, active }) {
+  const [x1, y1, x2, y2] = ends;
+  const angle = Math.atan2(y2 - y1, x2 - x1);
+  const wing = (delta) => `${x2 - 8 * Math.cos(angle + delta)},${y2 - 8 * Math.sin(angle + delta)}`;
+  const color = active ? INK : 'rgba(41, 37, 36, 0.3)';
   return (
-    <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} style={{ display: 'block', overflow: 'visible', flexShrink: 0 }}>
-      {Array.from({ length: P - 1 }, (_, d) => {
-        const y1 = cy(d) + 22;
-        const y2 = cy(d + 1) - 22;
-        return (
-          <g key={d}>
-            <line x1={x} y1={y1} x2={x} y2={y2} stroke={col} strokeWidth={2.5} />
-            <polygon points={downTip(x, y2)} fill={col} />
-          </g>
-        );
-      })}
-      {/* wraparound: bottom device -> top device, bowing out to the left */}
-      <path
-        d={`M ${x} ${cy(P - 1) - 22} C 8 ${cy(P - 1) - 46}, 8 ${cy(0) + 46}, ${x} ${cy(0) + 22}`}
-        fill="none"
-        stroke={col}
-        strokeWidth={2.5}
-      />
-      <polygon points={upTip(x, cy(0) + 22)} fill={col} />
-      <text
-        x={12}
-        y={H / 2}
-        fontSize={9}
-        fill={col}
-        textAnchor="middle"
-        transform={`rotate(-90 12 ${H / 2})`}
-        fontFamily="system-ui, -apple-system, sans-serif"
-      >
-        {active ? 'K,V hops →' : 'ring idle'}
-      </text>
-    </svg>
+    <g>
+      <line x1={x1} y1={y1} x2={x2} y2={y2} stroke={color} strokeWidth={1.5} />
+      <polygon points={`${x2},${y2} ${wing(0.45)} ${wing(-0.45)}`} fill={color} />
+    </g>
   );
 }
 
-function DeviceRow({ d, step }) {
-  const color = CHIP_COLORS[d];
-  const res = resident(d, Math.min(step, P - 1));
-  const containerHeight = SP * CELL + (SP - 1) * GAP; // 30
-  const done = step >= TOTAL_STEPS - 1;
-  const coveredAt = (j) => (d - j + P) % P; // step at which block j folds in on device d
-  const seen = Math.min(step + 1, P) * SP;
-
-  const qFill = () => ({ fill: color });
-  const kvFill = () => ({ fill: CHIP_COLORS[res], highlight: !done });
-  const stripFill = (_r, c) => {
-    const j = Math.floor(c / SP);
-    const at = coveredAt(j);
-    if (step < at) return { fill: ABSENT };
-    return { fill: CHIP_COLORS[j], stripe: !done, highlight: !done && at === step };
-  };
-
+function DeviceNode({ device, center }) {
+  const [qX, y] = blockOrigin(center, false);
+  const [kvX] = blockOrigin(center, true);
+  const labelY = y + BLOCK + 15;
   return (
-    <div
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        gap: 6,
-        height: ROW_H,
-        boxSizing: 'border-box',
-        padding: '8px 12px',
-        borderRadius: 12,
-        background: CARD_BG,
-        border: `1px solid ${CARD_BORDER}`,
-      }}
-    >
-      <div style={{ fontSize: 10, letterSpacing: '0.08em', textTransform: 'uppercase', color, fontWeight: 700 }}>
-        Device {d}
-      </div>
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 4 }}>
-        <TensorGrid name={`Q${d}`} subtitle="[S/P, H]" rows={SP} cols={2} getFill={qFill} containerHeight={containerHeight} cellSize={CELL} />
-        <OpSymbol containerHeight={containerHeight}>⊛</OpSymbol>
-        <TensorGrid
-          name="K,V"
-          subtitle={done ? `blk ${res} · done` : `blk ${res}`}
-          rows={SP}
-          cols={2}
-          getFill={kvFill}
-          containerHeight={containerHeight}
-          cellSize={CELL}
-        />
-        <OpSymbol containerHeight={containerHeight}>→</OpSymbol>
-        <TensorGrid
-          name={`O${d} · keys folded`}
-          subtitle={done ? '8/8 keys · done' : `${seen}/8 keys`}
-          rows={1}
-          cols={P * SP}
-          getFill={stripFill}
-          containerHeight={containerHeight}
-          cellSize={CELL}
-        />
-      </div>
-    </div>
+    <g>
+      <text x={center[0]} y={y - 5} textAnchor="middle">
+        Device {device}
+      </text>
+      {Array.from({ length: 4 }, (_, i) => {
+        const [dx, dy] = blockCell(i);
+        return (
+          <g key={i}>
+            <Slot x={qX + dx} y={y + dy} size={CELL} />
+            <Cell x={qX + dx} y={y + dy} size={CELL} fill={DEVICE_COLORS[device]} />
+            <Slot x={kvX + dx} y={y + dy} size={CELL} />
+          </g>
+        );
+      })}
+      <text x={qX + BLOCK / 2} y={labelY} textAnchor="middle">
+        Q
+      </text>
+      <text x={kvX + BLOCK / 2} y={labelY} textAnchor="middle">
+        K,V
+      </text>
+    </g>
+  );
+}
+
+function BlocksSeen({ x, y, step }) {
+  const gridX = x + MATRIX_LABEL;
+  const gridY = y + MATRIX_HEADER;
+  return (
+    <g>
+      <text x={gridX + MATRIX_GRID / 2} y={y + 13} textAnchor="middle">
+        K,V blocks seen
+      </text>
+      {DEVICES.map((block) => (
+        <text key={block} x={gridX + block * MATRIX_PITCH + MATRIX_CELL / 2} y={y + 32} textAnchor="middle">
+          {block}
+        </text>
+      ))}
+      {DEVICES.map((device) => (
+        <text key={device} x={x} y={gridY + device * MATRIX_PITCH + MATRIX_CELL / 2 + 4}>
+          D{device}
+        </text>
+      ))}
+      {DEVICES.flatMap((device) =>
+        DEVICES.map((block) => {
+          const cellX = gridX + block * MATRIX_PITCH;
+          const cellY = gridY + device * MATRIX_PITCH;
+          const seenAt = stepSeen(device, block);
+          return (
+            <g key={`${device}-${block}`}>
+              <Slot x={cellX} y={cellY} size={MATRIX_CELL} />
+              <Cell
+                x={cellX}
+                y={cellY}
+                size={MATRIX_CELL}
+                fill={DEVICE_COLORS[block]}
+                opacity={seenAt <= step ? 1 : 0}
+                outlined={seenAt === step}
+              />
+            </g>
+          );
+        }),
+      )}
+    </g>
   );
 }
 
 export default function RingAttention() {
   const [step, setStep] = useState(0);
+  const { ref, width, animated } = useFigureWidth();
+  const m = measure(width);
 
   return (
-    <WidgetShell
-      title="Ring attention — Q stays home, K,V rotates"
-      subtitle="Four devices, each owning S/P of the sequence. Every step a device attends its queries against the K,V block it currently holds, folds the result into its running output, and forwards that block to the next device — while the next block is already arriving. Cell color marks the device a block originated on."
-    >
-      <div style={{ display: 'flex', gap: 8, justifyContent: 'center', alignItems: 'flex-start' }}>
-        <RingRail active={step < P - 1} />
-        <div style={{ display: 'flex', flexDirection: 'column', gap: ROW_GAP }}>
-          {Array.from({ length: P }, (_, d) => (
-            <DeviceRow key={d} d={d} step={step} />
-          ))}
-        </div>
-      </div>
-
-      <Legend
-        items={[
-          { fill: CHIP_COLORS[0], label: 'block from device 0' },
-          { fill: CHIP_COLORS[1], label: 'device 1' },
-          { fill: CHIP_COLORS[2], label: 'device 2' },
-          { fill: CHIP_COLORS[3], label: 'device 3' },
-          { fill: CHIP_COLORS[0], stripe: true, label: 'O still rescaling' },
-          { fill: CHIP_COLORS[0], ring: true, label: 'active this tick' },
-        ]}
-      />
-
-      <Caption>{CAPTIONS[step]}</Caption>
-      <StepControls step={step} totalSteps={TOTAL_STEPS} setStep={setStep} />
-    </WidgetShell>
+    <Figure figureRef={ref} animated={animated}>
+      <DiagramSvg width={width} height={m.height} label="Ring attention on four devices">
+        {DEVICES.map((d) => (
+          <Hop key={d} ends={hopEnds(d, m.centers)} active={step > 0} />
+        ))}
+        {DEVICES.map((d) => (
+          <DeviceNode key={d} device={d} center={m.centers[d]} />
+        ))}
+        {DEVICES.flatMap((block) => {
+          const [x, y] = blockOrigin(m.centers[holder(block, step)], true);
+          return Array.from({ length: 4 }, (_, i) => {
+            const [dx, dy] = blockCell(i);
+            return <Cell key={`${block}-${i}`} x={x + dx} y={y + dy} size={CELL} fill={DEVICE_COLORS[block]} />;
+          });
+        })}
+        <BlocksSeen x={m.matrixX} y={m.matrixY} step={step} />
+      </DiagramSvg>
+      <StepLine lines={LINES} step={step} />
+      <StepControls step={step} total={LINES.length} onStep={setStep} />
+    </Figure>
   );
 }
