@@ -60,11 +60,11 @@ $$
 
 Nothing moves in the forward pass. In the backward pass, each device gets a different gradient $\partial W$ because it saw different rows. The devices combine their gradients with an [all-reduce](#all-reduce), which sums values across devices and gives every device the combined result.
 
-These all-reduces can overlap with computation. Only the optimizer needs the summed gradient, and it runs at the end of the step, so each all-reduce can run while the backward pass continues through earlier layers. The last all-reduce has no computation left to overlap with.
+These all-reduces can overlap with computation because the backward pass never waits for them. The backward pass runs from the last layer to the first, and each layer needs only $\partial X$ from the layer above it. Computing $\partial X$ uses $W$, not the summed $\partial W$. Only the optimizer needs the summed gradients, and it runs after the backward pass. So each all-reduce can start as soon as its layer finishes and run while the next layers compute. The last all-reduce has no computation left to overlap with.
 
 <Timeline schedule="dp" client:visible />
 
-Each device computes $\sim 6TE^2/P$ operations, and an all-reduce moves $\sim 2E^2$ values per device, so the ratio is about $3T/P$.
+Each device computes $\sim 6TE^2/P$ operations. An all-reduce has two halves, shown in the [appendix](#all-reduce). In the first, each device sends $P-1$ of the $P$ pieces of its $\partial W$, about $E^2$ values, to the devices that sum them. In the second, each device sends its summed piece to the other $P-1$ devices, about $E^2$ values again. So an all-reduce moves $\sim 2E^2$ values per device whatever $P$ is, and the ratio is about $3T/P$.
 
 Data parallelism cuts the tokens each device processes, and with them its compute and activations. It doesn't cut the weights, gradients, or optimizer state, which every device stores in full. It scales well because the all-reduces overlap with the backward pass. That holds until $T/P$ gets too small for each layer's compute to hide its all-reduce.
 

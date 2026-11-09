@@ -14,23 +14,28 @@ import {
 // Times are in arbitrary units. `start`, `dur`, and `shown` hold one value per
 // step, or a single value when it doesn't change.
 
-const COMPUTE_FILL = '#44403c';
-const TRANSFER_FILL = 'rgba(255, 255, 255, 0.6)';
-const TRANSFER_STROKE = 'rgba(41, 37, 36, 0.55)';
+export const COMPUTE_FILL = '#44403c';
+export const TRANSFER_FILL = 'rgba(255, 255, 255, 0.6)';
+export const TRANSFER_STROKE = 'rgba(41, 37, 36, 0.55)';
 
-const LABEL_WIDTH = 66;
+export const LABEL_WIDTH = 66;
 // Block labels are 11px, so each character is 0.6 × 11px wide.
 const BLOCK_CHAR_WIDTH = 6.6;
-const BLOCK_TEXT_X = 4;
-const RIGHT_PAD = 8;
-const AXIS_HEIGHT = 22;
+const BLOCK_TEXT_X = 3;
+export const RIGHT_PAD = 8;
+export const AXIS_HEIGHT = 22;
 const GROUP_HEADER = 22;
 const GROUP_GAP = 14;
-const LANE_HEIGHT = 32;
-const BLOCK_HEIGHT = 26;
+export const LANE_HEIGHT = 32;
+export const BLOCK_HEIGHT = 26;
+// Room above the lanes for dependency arcs, and below them for the line that
+// collects the feeder blocks.
+const ARC_SPACE = 20;
+const BUS_SPACE = 12;
+const ARROW_COLOR = 'rgba(41, 37, 36, 0.7)';
 
-const compute = (key, lane, label, short, start, dur) => ({ key, lane, label, short, start, dur, kind: 'compute' });
-const transfer = (key, lane, label, short, start, dur) => ({ key, lane, label, short, start, dur, kind: 'transfer' });
+export const compute = (key, lane, label, short, start, dur) => ({ key, lane, label, short, start, dur, kind: 'compute' });
+export const transfer = (key, lane, label, short, start, dur) => ({ key, lane, label, short, start, dur, kind: 'transfer' });
 const onlyIn = (step, block) => ({ ...block, shown: [0, 1].map((s) => s === step) });
 
 const LANES = [
@@ -39,18 +44,24 @@ const LANES = [
 ];
 
 const SCHEDULES = {
+  // The middle step adds arrows for what each block waits for. No arrow runs
+  // from an all-reduce back into a layer, which is why the last step can slide
+  // the all-reduces under the compute.
   dp: {
-    label: 'Data parallelism backward pass, without and with overlap',
+    label: 'Data parallelism backward pass: what each block waits for, without and with overlap',
     groups: [{ lanes: LANES }],
     blocks: [
       ...[4, 3, 2, 1].map((layer, i) => compute(`c${layer}`, 'c', `layer ${layer}`, `L${layer}`, 4 * i, 4)),
       ...[4, 3, 2, 1].map((layer, i) =>
-        transfer(`n${layer}`, 'n', `∂W${layer}`, `∂W${layer}`, [16 + 3 * i, 4 * (i + 1)], 3),
+        transfer(`n${layer}`, 'n', `∂W${layer}`, `∂W${layer}`, [16 + 4 * i, 16 + 4 * i, 4 * (i + 1)], 4),
       ),
+      compute('opt', 'c', 'optimizer', 'opt', [32, 32, 20], 4),
     ],
+    deps: { fromStep: 1, chain: ['c4', 'c3', 'c2', 'c1'], chainLabel: '∂X', feeders: ['n4', 'n3', 'n2', 'n1'], into: 'opt' },
     lines: [
-      'Without overlap, the all-reduces start after the whole backward pass.',
-      'With overlap, each all-reduce runs during the next layer’s backward pass. Only the last one adds time.',
+      'Without overlap, the all-reduces start after the whole backward pass, and then the optimizer runs.',
+      'Arrows show what each layer and the optimizer wait for. Each layer waits only for ∂X from the layer above it. Only the optimizer waits for the all-reduces.',
+      'So each all-reduce can start when its layer finishes and run during the next layer. Only the last one adds time.',
     ],
   },
   fsdp: {
@@ -131,7 +142,7 @@ function fitLabel(block, width) {
 }
 
 function layout(schedule) {
-  let y = AXIS_HEIGHT;
+  let y = AXIS_HEIGHT + (schedule.deps ? ARC_SPACE : 0);
   const laneY = {};
   const groups = schedule.groups.map((group) => {
     const top = y;
@@ -144,10 +155,81 @@ function layout(schedule) {
     y += GROUP_GAP;
     return placed;
   });
-  return { groups, laneY, height: y - GROUP_GAP + 4 };
+  return { groups, laneY, height: y - GROUP_GAP + 4 + (schedule.deps ? BUS_SPACE : 0) };
 }
 
-function Block({ block, step, x0, scale, laneY }) {
+// A small filled triangle with its tip at (x, y), pointing along (dx, dy).
+function arrowHead(x, y, dx, dy, size = 5) {
+  const length = Math.hypot(dx, dy);
+  const ux = dx / length;
+  const uy = dy / length;
+  const bx = x - ux * size;
+  const by = y - uy * size;
+  const px = -uy * size * 0.6;
+  const py = ux * size * 0.6;
+  return `M ${x} ${y} L ${bx + px} ${by + py} L ${bx - px} ${by - py} Z`;
+}
+
+// Arcs along a chain of blocks, plus a line from each feeder block into one
+// block that waits for all of them. The feeder lines move with their blocks.
+function Dependencies({ deps, blocks, step, x0, scale, laneY }) {
+  const byKey = Object.fromEntries(blocks.map((block) => [block.key, block]));
+  const centerX = (key) => x0 + (at(byKey[key].start, step) + at(byKey[key].dur, step) / 2) * scale;
+  const top = (key) => laneY[byKey[key].lane] + 3;
+  const bottom = (key) => top(key) + BLOCK_HEIGHT;
+  const busY = Math.max(...deps.feeders.map(bottom)) + BUS_SPACE - 4;
+  const busStart = Math.min(...deps.feeders.map(centerX));
+  const intoX = centerX(deps.into);
+  const intoBottom = bottom(deps.into);
+
+  return (
+    <g
+      className="pd-fade"
+      style={{ opacity: step >= deps.fromStep ? 1 : 0 }}
+      stroke={ARROW_COLOR}
+      strokeWidth={1.5}
+      fill="none"
+    >
+      {deps.chain.slice(1).map((key, i) => {
+        const ax = centerX(deps.chain[i]);
+        const bx = centerX(key);
+        const mx = (ax + bx) / 2;
+        const y = top(key) - 2;
+        return (
+          <g key={key}>
+            <path d={`M ${ax} ${y} Q ${mx} ${y - 14} ${bx} ${y}`} />
+            <path d={arrowHead(bx, y, bx - mx, 14)} fill={ARROW_COLOR} stroke="none" />
+            <text className="pd-small" x={mx} y={y - 11} textAnchor="middle" stroke="none">
+              {deps.chainLabel}
+            </text>
+          </g>
+        );
+      })}
+      {deps.feeders.map((key) => (
+        <g key={key} className="pd-cell" style={{ transform: `translate(${centerX(key)}px, 0px)` }}>
+          <line x1={0} x2={0} y1={bottom(key)} y2={busY} />
+        </g>
+      ))}
+      <g className="pd-cell" style={{ transform: `translate(${busStart}px, ${busY}px)` }}>
+        <rect
+          className="pd-block"
+          y={-0.75}
+          height={1.5}
+          width={intoX - busStart}
+          style={{ width: intoX - busStart }}
+          fill={ARROW_COLOR}
+          stroke="none"
+        />
+      </g>
+      <g className="pd-cell" style={{ transform: `translate(${intoX}px, 0px)` }}>
+        <line x1={0} x2={0} y1={busY + 0.75} y2={intoBottom + 4} />
+        <path d={arrowHead(0, intoBottom + 1, 0, -1)} fill={ARROW_COLOR} stroke="none" />
+      </g>
+    </g>
+  );
+}
+
+export function Block({ block, step, x0, scale, laneY }) {
   const start = at(block.start, step);
   // A minimum width keeps very short transfers visible.
   const width = Math.max(5, at(block.dur, step) * scale - 2);
@@ -179,9 +261,9 @@ function Block({ block, step, x0, scale, laneY }) {
   );
 }
 
-function EndMarker({ x, top, bottom }) {
+export function EndMarker({ x, top, bottom, visible = true }) {
   return (
-    <g className="pd-cell" style={{ transform: `translate(${x}px, 0px)` }}>
+    <g className="pd-cell" style={{ transform: `translate(${x}px, 0px)`, opacity: visible ? 1 : 0 }}>
       <line x1={0} x2={0} y1={top} y2={bottom} stroke={INK} strokeWidth={1.5} strokeDasharray="3 3" />
     </g>
   );
@@ -245,6 +327,16 @@ export default function Timeline({ schedule: name }) {
         {schedule.blocks.map((block) => (
           <Block key={block.key} block={block} step={step} x0={x0} scale={scale} laneY={laneY} />
         ))}
+        {schedule.deps && (
+          <Dependencies
+            deps={schedule.deps}
+            blocks={schedule.blocks}
+            step={step}
+            x0={x0}
+            scale={scale}
+            laneY={laneY}
+          />
+        )}
       </DiagramSvg>
       <Legend
         items={[
