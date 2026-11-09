@@ -135,6 +135,14 @@ export function Cell({
   );
 }
 
+// Keeps hyphenated words such as "all-reduce" on one line.
+function keepHyphenatedWords(line) {
+  if (typeof line !== 'string') return line;
+  return line
+    .split(/(\S+-\S+)/)
+    .map((part, i) => (i % 2 ? <span key={i} className="pd-nowrap">{part}</span> : part));
+}
+
 // Every line stays in the layout, so the figure is as tall as its longest line
 // at any width and the controls below it never move. `reserve` holds lines from
 // other modes of the same figure, so switching modes doesn't move them either.
@@ -143,12 +151,12 @@ export function StepLine({ lines, step, reserve = [] }) {
     <p className="pd-step-line" aria-live="polite">
       {lines.map((line, i) => (
         <span key={i} className={i === step ? 'is-current' : undefined}>
-          {line}
+          {keepHyphenatedWords(line)}
         </span>
       ))}
       {reserve.map((line, i) => (
         <span key={`reserve-${i}`} aria-hidden="true">
-          {line}
+          {keepHyphenatedWords(line)}
         </span>
       ))}
     </p>

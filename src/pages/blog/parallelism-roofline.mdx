@@ -20,6 +20,8 @@ import ShardingStage from '../../components/parallelism/ShardingStage.jsx';
 
 import Timeline from '../../components/parallelism/Timeline.jsx';
 
+import TpChunks from '../../components/parallelism/TpChunks.jsx';
+
 import TpPair from '../../components/parallelism/TpPair.jsx';
 
 import UlyssesAttention from '../../components/parallelism/UlyssesAttention.jsx';
@@ -34,9 +36,9 @@ $$
 
 <MatmulExample client:visible />
 
-$X$ is the input, $W$ is the weights, and $Y$ is the output. $T$ is the number of token rows, and $E$ is the hidden width. This matmul takes about $2TE^2$ operations. The backward pass computes two more matmuls of the same size, for $\partial X$ and $\partial W$, so a training step takes about $6TE^2$. We split this work across $P$ devices.
+$X$ is the input, $W$ is the weights, and $Y$ is the output. $T$ is the number of token rows, and $E$ is the hidden width. This matmul takes about $2TE^2$ operations, because each of the $TE$ entries of $Y$ needs $E$ multiplications and $E$ additions. The backward pass computes two more matmuls of the same size, for $\partial X$ and $\partial W$, so a training step takes about $6TE^2$. We split this work across $P$ devices.
 
-A *roofline* analysis bounds a device's speed by two limits: its peak compute rate, and the rate at which data can reach it. The lower limit sets the speed. The original roofline model used memory bandwidth for the second limit, and here we use the network. To see which limit is likely to apply, each section works out one ratio:
+A *roofline* analysis bounds a device's speed by two limits: its peak compute rate, and the rate at which data can reach it over the network. The lower limit sets the speed. To see which limit is likely to apply, each section works out one ratio:
 
 $$
 \frac{\text{operations per device}}{\text{values moved per device}}
@@ -46,7 +48,7 @@ We count one layer over a full training step. A higher ratio means each value mo
 
 Timing matters too. When a transfer overlaps with computation, the two take about as long as the slower one. When computation has to wait for the transfer, they take as long as both combined.
 
-Each section covers the same points in the same order: what is split, what moves, whether the transfer can overlap with computation, the ratio, and the limit. A *collective* is a communication operation involving every device in a group, and the [appendix](#appendix-collectives) animates each one.
+Each section covers the same points in the same order: what is split, what moves, whether the transfer can overlap with computation, the ratio, and the overall effect: what the method shrinks on each device and how far it scales. A *collective* is a communication operation involving every device in a group, and the [appendix](#appendix-collectives) animates each one.
 
 ## Data parallelism
 
@@ -58,15 +60,15 @@ $$
 
 <ShardingStage strategy="dp" client:visible />
 
-Nothing moves in the forward pass. In the backward pass, each device gets a different gradient $\partial W$ because it saw different rows. The devices combine their gradients with an [all-reduce](#all-reduce), which sums values across devices and gives every device the result.
+Nothing moves in the forward pass. In the backward pass, each device gets a different gradient $\partial W$ because it saw different rows. The devices combine their gradients with an [all-reduce](#all-reduce), which sums values across devices and gives every device the combined result.
 
-These all-reduces can overlap with computation. Only the optimizer needs the summed gradient, and it runs at the end of the step, so each all-reduce can run while the backward pass continues through earlier layers. The last all-reduce has no computation left to overlap with.
+These all-reduces can overlap with computation because the backward pass never waits for them. The backward pass runs from the last layer to the first, and each layer needs only $\partial X$ from the layer above it. Computing $\partial X$ uses $W$, not the summed $\partial W$. Only the optimizer needs the summed gradients, and it runs after the backward pass. So each all-reduce can start as soon as its layer finishes and run while the next layers compute. The last all-reduce has no computation left to overlap with.
 
 <Timeline schedule="dp" client:visible />
 
-Each device computes $\sim 6TE^2/P$ operations, and an all-reduce moves $\sim 2E^2$ values per device, so the ratio is about $3T/P$.
+Each device computes $\sim 6TE^2/P$ operations. An all-reduce has two halves, shown in the [appendix](#all-reduce). In the first, each device sends $P-1$ of the $P$ pieces of its $\partial W$, about $E^2$ values, to the devices that sum them. In the second, each device sends its summed piece to the other $P-1$ devices, about $E^2$ values again. So an all-reduce moves $\sim 2E^2$ values per device whatever $P$ is, and the ratio is about $3T/P$.
 
-The limit is memory. Splitting rows reduces the activations each device stores, but every device still stores all of the weights, gradients, and optimizer state.
+Data parallelism cuts the tokens each device processes, and with them its compute and activations. It doesn't cut the weights, gradients, or optimizer state, which every device stores in full. It scales well because the all-reduces overlap with the backward pass. That holds until $T/P$ gets too small for each layer's compute to hide its all-reduce.
 
 ## FSDP
 
@@ -74,7 +76,17 @@ Fully sharded data parallelism (FSDP) splits the rows the same way, and also spl
 
 <ShardingStage strategy="fsdp" client:visible />
 
-Each layer has three transfers: an all-gather of $W$ in the forward pass, another in the backward pass, and a [reduce-scatter](#reduce-scatter) of $\partial W$, which sums values across devices and leaves each device with one piece of the result. Together, they move about 1.5 times as much data as data parallelism's all-reduce. Keeping the gathered $W$ through the backward pass removes one all-gather but uses more memory.
+Each layer has three transfers: an all-gather of $W$ in the forward pass, another in the backward pass to compute $\partial X$, and a [reduce-scatter](#reduce-scatter) of $\partial W$. As in data parallelism, each device computes $\partial W$ from its own rows:
+
+$$
+X^\top[E, T/P] \; @ \; \partial Y[T/P, E] \rightarrow \partial W[E, E]
+$$
+
+The result is full size but only part of the sum. The reduce-scatter adds these partial results across devices and leaves each device only the summed piece that matches its piece of $W$. That is all its optimizer needs, because each device updates only its own piece of $W$. Data parallelism's all-reduce is the same reduce-scatter followed by an all-gather, which gives every device the whole sum.
+
+<ShardingStage strategy="fsdp-grad" client:visible />
+
+Each of the three transfers is half of an all-reduce, so each moves about $E^2$ values per device. Together they move 1.5 times as much data as data parallelism's all-reduce. Keeping the gathered $W$ through the backward pass removes one all-gather but uses more memory.
 
 A device can gather the next layer's weights while it computes the current layer. If the gather finishes first, computation never waits for it. Only the first gather and the last reduce-scatter have no computation to overlap with.
 
@@ -82,7 +94,7 @@ A device can gather the next layer's weights while it computes the current layer
 
 Compute is the same as data parallelism, $\sim 6TE^2/P$. The three transfers move $\sim 3E^2$ values, so the ratio is about $2T/P$.
 
-FSDP saves memory but moves 1.5 times as much data. The limit is that a device must hold one layer's full weights while the layer runs, plus the next layer's when gathering ahead. With few rows per device, the gathers can also take longer than the compute they overlap with, and computation starts waiting.
+FSDP cuts the tokens each device processes, like data parallelism, and also cuts the weights, gradients, and optimizer state each device stores to $1/P$ of their full size. In exchange, it moves 1.5 times as much data, and a device must still hold one layer's full weights and unreduced $\partial W$ while the layer runs, plus the next layer's weights when gathering ahead. It scales until $T/P$ gets too small for each layer's compute to hide its gathers.
 
 ## Tensor parallelism
 
@@ -104,17 +116,19 @@ $$
 
 <ShardingStage strategy="tp-row" client:visible />
 
-The output of a column-parallel layer is exactly the input a row-parallel layer needs, even with an elementwise nonlinearity between them. So a column-parallel layer followed by a row-parallel layer needs nothing moved between them. It needs one collective at the end, usually an all-reduce, because the layers between pairs need all of $Y$. A reduce-scatter can instead leave each device with some rows of $Y$, as in the diagram above, with an all-gather rebuilding $Y$ before the next pair. This moves the same amount of data, and the layers in between work on $1/P$ of the rows. The backward pass also needs one collective per pair.
+The output of a column-parallel layer is already split by columns across devices, which is exactly the input a row-parallel layer needs. This holds even with an elementwise nonlinearity between them, because it works on each value separately. So a column-parallel layer followed by a row-parallel layer needs nothing moved between them. Below, $H$ is the first layer's output and the second layer's input:
 
 <TpPair client:visible />
 
-That final collective normally makes computation wait, because the next layer needs its result. It can overlap if the layer is computed in chunks of rows: each chunk's all-reduce runs while the next chunk computes. The implementation has to split the matmul and start each chunk's transfer as soon as the chunk is done, so this isn't automatic.
+The pair needs one collective at the end, usually an all-reduce, because the layers between pairs need all of $Y$. This leaves $Y$ on every device, as $X$ was at the start. A reduce-scatter can instead leave each device with some rows of $Y$, as in the row-parallel diagram above, with an all-gather rebuilding $Y$ before the next pair. This moves the same amount of data, and the layers in between work on $1/P$ of the rows. The backward pass also needs one collective per pair.
 
-<Timeline schedule="tp-chunks" client:visible />
+That final collective normally makes computation wait, because the next layer needs its result. It can overlap if each device splits its work into chunks of token rows. These chunks don't come from the column or row split, which both split $E$: every device still has all $T$ rows. A row of the output depends only on the same row of the input, so a device can compute its rows one chunk at a time and all-reduce each chunk while the next one computes. The column-parallel layer can be chunked the same way, so each chunk can run through the whole pair before its all-reduce. The implementation has to split the matmul and start each chunk's transfer itself, so this isn't automatic.
+
+<TpChunks client:visible />
 
 For a pair of layers, each device computes $\sim 12TE^2/P$ operations. The pair's two all-reduces, one in each pass, move $\sim 4TE$ values per device. $T$ cancels, so the ratio is about $3E/P$.
 
-The limit is group size. As $P$ grows, each device's matmul gets narrower, but the activation it has to move stays the same size.
+Tensor parallelism cuts each device's share of the weights and of each matmul, but not the tokens it processes. Its transfers don't shrink as $P$ grows: each device's matmul gets narrower, but the activation it moves stays the same size. So it suits small groups of devices, where $3E/P$ stays high.
 
 ## Context parallelism
 
@@ -138,7 +152,7 @@ A device can send a block while it computes with that block. This overlap works 
 
 For each block in the forward pass, a device computes $\sim 4NA(S/P)^2H$ operations and sends $\sim 2NA(S/P)H$ values. The backward pass computes and sends about twice as much, so the ratio is about $2S/P$.
 
-The limit is balance. With a causal mask, later positions attend to more keys than earlier ones, so compute is uneven unless positions are reassigned across devices.
+Ring attention cuts the positions each device holds, and with them its activations, so a sequence can be longer than one device could hold. It scales while each block's compute hides its send. As $P$ grows, a block's compute shrinks faster than its send, so this eventually fails. With a causal mask, later positions attend to more keys than earlier ones, so compute is also uneven unless positions are reassigned across devices.
 
 ### Ulysses attention
 
@@ -156,7 +170,7 @@ Both all-to-alls normally make computation wait: attention can't start until the
 
 The exchanges move $\sim 4NA(S/P)H$ values per device in each pass: $Q$, $K$, $V$, and the output in the forward pass, and their gradients in the backward pass. Local attention computes $\sim 4N(A/P)S^2H$ operations in the forward pass and about twice that in the backward pass. $P$ cancels, so the ratio is about $1.5S$.
 
-The limit is the number of heads. $P$ can't exceed $A$, and the split is only even if $P$ divides $A$. Grouped-query and multi-query attention have fewer $K,V$ heads, which can lower this limit or require a different implementation.
+Ulysses also cuts the activations each device holds, and its ratio, $1.5S$, doesn't fall as $P$ grows. But computation waits for its all-to-alls, and $P$ can't exceed the number of heads $A$. The split is only even if $P$ divides $A$. Grouped-query and multi-query attention have fewer $K,V$ heads, which can lower this limit or require a different implementation.
 
 Per device, ring attention moves about $P/2$ times more data than Ulysses in the forward pass, and about $P$ times more in the backward pass. But it can overlap those transfers with computation. Ulysses moves less, but computation waits for it. The timeline shows a forward pass on 4 devices.
 
@@ -176,7 +190,7 @@ Neither transfer overlaps with computation by default. An expert can't start unt
 
 Each token-expert pair computes $\sim 2E^2$ operations in the forward pass and $\sim 4E^2$ in the backward pass. Each pass sends the pair's $E$ values out and back, $\sim 4E$ in all. Both counts scale with $k$ and $T/P$, so the ratio is about $1.5E$.
 
-The limit is load balance. When a *hot expert* receives far more than its share of tokens, the whole group waits for that device. The toggle above shows this case.
+Expert parallelism cuts the expert weights each device stores, so adding devices allows more experts. Its ratio, $1.5E$, doesn't fall as $P$ grows, but the transfers don't overlap by default, and the group runs only as fast as its busiest device. When a *hot expert* receives far more than its share of tokens, the whole group waits for that device. The toggle above shows this case.
 
 ### All-gather and reduce-scatter routing
 
@@ -188,7 +202,7 @@ Both transfers can overlap with computation if they are chunked: the experts pro
 
 With balanced routing, each device computes $\sim 6kTE^2/P$ operations. Each pass has a gather and a scatter of $\sim TE$ values, $\sim 4TE$ in all, so the ratio is about $1.5kE/P$.
 
-The limit is data volume. All-to-all routing moves $\sim kTE/P$ values per device in each transfer, so this method moves about $P/k$ times more per device. The gap shrinks as $k$ grows, and it can be smaller in practice, because all-to-all messages share network links and may need padding. Every device also needs room for all $T$ tokens unless chunks are streamed. It doesn't fix load imbalance either, so a hot expert still slows the group.
+This method also cuts the expert weights each device stores, and its transfers can overlap with computation. But every device receives every token. All-to-all routing moves $\sim kTE/P$ values per device in each transfer, so this method moves about $P/k$ times more per device. The gap shrinks as $k$ grows, and it can be smaller in practice, because all-to-all messages share network links and may need padding. Every device also needs room for all $T$ tokens unless chunks are streamed, and a hot expert still slows the group.
 
 ## Summary
 

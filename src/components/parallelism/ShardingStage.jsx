@@ -11,10 +11,12 @@ import {
   StepLine,
   StepControls,
   Legend,
+  Toggle,
 } from './diagram-kit.jsx';
 
-// One matmul, X @ W = Y, on two devices. A tensor is drawn in full on each
-// device; a colored cell is held there and an empty one is held elsewhere.
+// One matmul on two devices: X @ W = Y, or the weight gradient Xᵀ @ ∂Y = ∂W.
+// A tensor is drawn in full on each device; a colored cell is held there and an
+// empty one is held elsewhere.
 
 const T = 4;
 const E = 2;
@@ -22,12 +24,40 @@ const DEVICES = [0, 1];
 const GAP = 2;
 const SYMBOL_WIDTH = 22;
 const DEVICE_GAP = 28;
+// Wider matmuls tighten the spacing on narrow screens before shrinking cells.
+const COMPACT_SYMBOL_WIDTH = 16;
+const COMPACT_DEVICE_GAP = 20;
+const MIN_CELL = 14;
 const HEADER_HEIGHT = 22;
 const LABEL_HEIGHT = 22;
 
 const COPY_ITEM = { fill: COPY_COLOR, label: 'copy on every device' };
 const ELSEWHERE_ITEM = { fill: EMPTY_COLOR, label: 'on the other device' };
 const PARTIAL_ITEM = { fill: DEVICE_COLORS[0], hatched: true, label: 'partial sum' };
+
+const FORWARD = [
+  { name: 'X', rows: T, cols: E },
+  { name: 'W', rows: E, cols: E },
+  { name: 'Y', rows: T, cols: E },
+];
+
+const GRADIENT = [
+  {
+    name: 'Xt',
+    label: (
+      <>
+        X
+        <tspan dy="-5" style={{ fontSize: '9px' }}>
+          T
+        </tspan>
+      </>
+    ),
+    rows: E,
+    cols: T,
+  },
+  { name: 'dY', label: '∂Y', rows: T, cols: E },
+  { name: 'dW', label: '∂W', rows: E, cols: E },
+];
 
 const rowOwner = (r) => Math.floor((r * DEVICES.length) / T);
 
@@ -138,30 +168,98 @@ const STRATEGIES = {
         }),
       ]),
   },
+  // Data parallelism and FSDP compute the same partial ∂W. FSDP stops after the
+  // reduce-scatter; data parallelism's all-reduce adds an all-gather.
+  'fsdp-grad': {
+    label: 'The weight gradient on two devices, reduced by FSDP or by data parallelism',
+    tensors: GRADIENT,
+    legend: [PARTIAL_ITEM, ELSEWHERE_ITEM],
+    modes: [
+      {
+        value: 'fsdp',
+        label: 'FSDP',
+        lines: [
+          'Each device has ∂Y for its own token rows, and the matching columns of Xᵀ.',
+          'Each device computes a full-sized ∂W, but it is only a partial sum over its own rows.',
+          'Reduce-scatter: each device sends the row of ∂W it doesn’t keep and adds the row it receives. Each device ends with the finished row of ∂W that matches its row of W.',
+        ],
+      },
+      {
+        value: 'dp',
+        label: 'Data parallelism',
+        lines: [
+          'Each device has ∂Y for its own token rows, and the matching columns of Xᵀ.',
+          'Each device computes a full-sized ∂W, but it is only a partial sum over its own rows.',
+          'Reduce-scatter: each device sends the row of ∂W it doesn’t keep and adds the row it receives. Each device has one finished row.',
+          'All-gather: each device sends its finished row to the other. Every device ends with all of ∂W, to update all of W.',
+        ],
+      },
+    ],
+    cells: (step) =>
+      DEVICES.flatMap((d) => [
+        ...allCells('Xt', E, T, () => ({ device: d, fill: DEVICE_COLORS[d] }))
+          .filter((cell) => rowOwner(cell.c) === d)
+          .map((cell) => ({ ...cell, key: `Xt-${d}-${cell.r}-${cell.c}` })),
+        ...ownedRows('dY', d),
+        ...allCells('dW', E, E, (r, c) => {
+          // Device r keeps row r, the row that matches its row of W.
+          const kept = r === d;
+          const sent = step >= 2 && !kept;
+          return {
+            key: `dW-${d}-${r}-${c}`,
+            device: sent ? r : d,
+            fill: DEVICE_COLORS[d],
+            hatched: step === 1 || !kept,
+            opacity: step === 0 || sent ? 0 : 1,
+            arriving: sent,
+            late: step === 2 && kept,
+          };
+        }),
+        // All-gather: a copy of this device's finished row starts under it, then
+        // travels to the other device.
+        ...allCells('dW', 1, E, (_r, c) => ({
+          key: `dW-copy-${d}-${c}`,
+          device: step === 3 ? 1 - d : d,
+          r: d,
+          fill: DEVICE_COLORS[d],
+          opacity: step === 3 ? 1 : 0,
+        })),
+      ]),
+  },
 };
 
-function measure(width) {
-  const room = width - 6 * GAP - 4 * SYMBOL_WIDTH - DEVICE_GAP;
-  const size = Math.max(13, Math.min(24, Math.floor(room / 12)));
+function measure(width, tensors) {
+  const cols = tensors.reduce((sum, tensor) => sum + tensor.cols, 0);
+  const fit = (symbolWidth, deviceGap) =>
+    Math.floor(((width - deviceGap) / 2 - 2 * symbolWidth + tensors.length * GAP) / cols - GAP);
+  const compact = fit(SYMBOL_WIDTH, DEVICE_GAP) < MIN_CELL;
+  const symbolWidth = compact ? COMPACT_SYMBOL_WIDTH : SYMBOL_WIDTH;
+  const deviceGap = compact ? COMPACT_DEVICE_GAP : DEVICE_GAP;
+  const size = Math.max(10, Math.min(24, fit(symbolWidth, deviceGap)));
   const pitch = size + GAP;
-  const tensorWidth = E * pitch - GAP;
-  const tallHeight = T * pitch - GAP;
-  const shortHeight = E * pitch - GAP;
-  const deviceWidth = 3 * tensorWidth + 2 * SYMBOL_WIDTH;
-  const left = Math.max(0, (width - 2 * deviceWidth - DEVICE_GAP) / 2);
-  const tensorX = { X: 0, W: tensorWidth + SYMBOL_WIDTH, Y: 2 * (tensorWidth + SYMBOL_WIDTH) };
-  const tensorY = {
-    X: HEADER_HEIGHT,
-    W: HEADER_HEIGHT + (tallHeight - shortHeight) / 2,
-    Y: HEADER_HEIGHT,
-  };
-  const deviceX = (d) => left + d * (deviceWidth + DEVICE_GAP);
+  const span = (n) => n * pitch - GAP;
+  const tallHeight = span(Math.max(...tensors.map((tensor) => tensor.rows)));
+  const tensorX = {};
+  const tensorY = {};
+  const tensorWidth = {};
+  let x = 0;
+  for (const tensor of tensors) {
+    tensorX[tensor.name] = x;
+    tensorWidth[tensor.name] = span(tensor.cols);
+    // Shorter tensors are centered on the tallest one.
+    tensorY[tensor.name] = HEADER_HEIGHT + (tallHeight - span(tensor.rows)) / 2;
+    x += span(tensor.cols) + symbolWidth;
+  }
+  const deviceWidth = x - symbolWidth;
+  const left = Math.max(0, (width - 2 * deviceWidth - deviceGap) / 2);
+  const deviceX = (d) => left + d * (deviceWidth + deviceGap);
   return {
     size,
-    tensorWidth,
+    symbolWidth,
     tallHeight,
     deviceWidth,
     tensorX,
+    tensorWidth,
     deviceX,
     height: HEADER_HEIGHT + tallHeight + LABEL_HEIGHT,
     cellX: (device, tensor, c) => deviceX(device) + tensorX[tensor] + c * pitch,
@@ -169,12 +267,7 @@ function measure(width) {
   };
 }
 
-function DeviceFrame({ device, m }) {
-  const slots = [
-    ['X', T],
-    ['W', E],
-    ['Y', T],
-  ];
+function DeviceFrame({ device, tensors, m }) {
   const x = m.deviceX(device);
   const symbolY = HEADER_HEIGHT + m.tallHeight / 2 + 5;
   return (
@@ -182,48 +275,71 @@ function DeviceFrame({ device, m }) {
       <text x={x + m.deviceWidth / 2} y={13} textAnchor="middle">
         Device {device}
       </text>
-      {slots.flatMap(([tensor, rows]) =>
-        Array.from({ length: rows * E }, (_, i) => (
+      {tensors.flatMap((tensor) =>
+        Array.from({ length: tensor.rows * tensor.cols }, (_, i) => (
           <Slot
-            key={`${tensor}-${i}`}
-            x={m.cellX(device, tensor, i % E)}
-            y={m.cellY(tensor, Math.floor(i / E))}
+            key={`${tensor.name}-${i}`}
+            x={m.cellX(device, tensor.name, i % tensor.cols)}
+            y={m.cellY(tensor.name, Math.floor(i / tensor.cols))}
             size={m.size}
           />
         )),
       )}
-      {slots.map(([tensor]) => (
+      {tensors.map((tensor) => (
         <text
-          key={tensor}
-          x={x + m.tensorX[tensor] + m.tensorWidth / 2}
+          key={tensor.name}
+          x={x + m.tensorX[tensor.name] + m.tensorWidth[tensor.name] / 2}
           y={HEADER_HEIGHT + m.tallHeight + 17}
           textAnchor="middle"
         >
-          {tensor}
+          {tensor.label ?? tensor.name}
         </text>
       ))}
-      <text className="pd-symbol" x={x + m.tensorX.W - SYMBOL_WIDTH / 2} y={symbolY} textAnchor="middle">
-        @
-      </text>
-      <text className="pd-symbol" x={x + m.tensorX.Y - SYMBOL_WIDTH / 2} y={symbolY} textAnchor="middle">
-        =
-      </text>
+      {['@', '='].map((symbol, i) => (
+        <text
+          key={symbol}
+          className="pd-symbol"
+          x={x + m.tensorX[tensors[i + 1].name] - m.symbolWidth / 2}
+          y={symbolY}
+          textAnchor="middle"
+        >
+          {symbol}
+        </text>
+      ))}
     </g>
   );
 }
 
 export default function ShardingStage({ strategy = 'dp' }) {
   const config = STRATEGIES[strategy];
+  const tensors = config.tensors ?? FORWARD;
+  const [mode, setMode] = useState(config.modes?.[0].value);
   const [step, setStep] = useState(0);
   const { ref, width, animated } = useFigureWidth();
-  const m = measure(width);
+  const m = measure(width, tensors);
   const cells = config.cells(step);
+  const linesFor = (value) => (config.modes ? config.modes.find((option) => option.value === value).lines : config.lines);
+  const lines = linesFor(mode);
+  const reserve = config.modes ? config.modes.filter((option) => option.value !== mode).flatMap((option) => option.lines) : [];
+  // A mode with fewer steps ends on its last step.
+  const changeMode = (value) => {
+    setMode(value);
+    setStep((current) => Math.min(current, linesFor(value).length - 1));
+  };
 
   return (
     <Figure figureRef={ref} animated={animated}>
+      {config.modes && (
+        <Toggle
+          label="Method"
+          options={config.modes.map(({ value, label }) => ({ value, label }))}
+          value={mode}
+          onChange={changeMode}
+        />
+      )}
       <DiagramSvg width={width} height={m.height} label={config.label}>
         {DEVICES.map((d) => (
-          <DeviceFrame key={d} device={d} m={m} />
+          <DeviceFrame key={d} device={d} tensors={tensors} m={m} />
         ))}
         {cells.map((cell) => (
           <Cell
@@ -240,10 +356,10 @@ export default function ShardingStage({ strategy = 'dp' }) {
         ))}
       </DiagramSvg>
       <Legend items={config.legend} />
-      {config.lines.length > 0 && (
+      {lines.length > 0 && (
         <>
-          <StepLine lines={config.lines} step={step} />
-          <StepControls step={step} total={config.lines.length} onStep={setStep} />
+          <StepLine lines={lines} step={step} reserve={reserve} />
+          <StepControls step={step} total={lines.length} onStep={setStep} />
         </>
       )}
     </Figure>

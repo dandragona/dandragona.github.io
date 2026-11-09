@@ -3,6 +3,7 @@ import {
   DEVICE_COLORS,
   COPY_COLOR,
   EMPTY_COLOR,
+  INK,
   useFigureWidth,
   Figure,
   DiagramSvg,
@@ -37,9 +38,14 @@ const SYMBOLS = ['@', '→', '@', '→'];
 const LINES = [
   'Each device has all of X, one column of W₁, and one row of W₂.',
   'Column-parallel layer: each device computes its own column of H. Nothing moves.',
-  'Row-parallel layer: each device multiplies its column of H by its row of W₂. The result is a partial sum of Y.',
-  'All-reduce: the devices add their partial sums, and each gets all of Y, ready for the next pair.',
+  'An elementwise nonlinearity works on each value of H separately, so each device applies it to its own column. That column matches the device’s row of W₂.',
+  'Row-parallel layer: each device multiplies its column of H by its row of W₂. The result is a full-sized partial sum of Y. Nothing has moved yet.',
+  'All-reduce: the devices add their partial sums, so every device has all of Y, like X at the start, ready for the next pair.',
 ];
+// Steps where each device's column of H and row of W₂ are outlined.
+const MATCH_STEPS = [2, 3];
+const PARTIAL_STEP = 3;
+const REDUCED_STEP = 4;
 
 function grid(tensor, rows, build) {
   return Array.from({ length: rows * E }, (_, i) => {
@@ -69,19 +75,19 @@ function cellsFor(step) {
       ...grid('Y', T, (r, c) => ({
         key: `Y-${d}-${r}-${c}`,
         device: d,
-        fill: step === 3 ? COPY_COLOR : DEVICE_COLORS[d],
-        hatched: step === 2,
-        opacity: step >= 2 ? 1 : 0,
-        late: step === 3,
+        fill: step === REDUCED_STEP ? COPY_COLOR : DEVICE_COLORS[d],
+        hatched: step === PARTIAL_STEP,
+        opacity: step >= PARTIAL_STEP ? 1 : 0,
+        late: step === REDUCED_STEP,
       })),
       // A copy of the other device's partial sum, which travels here and is added in.
       ...grid('Y', T, (r, c) => ({
         key: `Y-from-${other}-${r}-${c}`,
-        device: step === 3 ? d : other,
+        device: step === REDUCED_STEP ? d : other,
         fill: DEVICE_COLORS[other],
         hatched: true,
-        opacity: step === 2 ? 1 : 0,
-        arriving: step === 3,
+        opacity: step === PARTIAL_STEP ? 1 : 0,
+        arriving: step === REDUCED_STEP,
       })),
     ];
   });
@@ -114,6 +120,32 @@ function measure(width) {
     cellY: (device, tensor, r) =>
       deviceY(device) + HEADER_HEIGHT + offsetY(TENSORS[tensorIndex[tensor]].rows) + r * pitch,
   };
+}
+
+// Outlines drawn in the gaps around this device's column of H and row of W₂.
+function Match({ device, step, m }) {
+  const pad = GAP / 2;
+  const boxes = [
+    { x: m.cellX('H', device), y: m.cellY(device, 'H', 0), width: m.size, height: m.tallHeight },
+    { x: m.cellX('W₂', 0), y: m.cellY(device, 'W₂', device), width: m.tensorWidth, height: m.size },
+  ];
+  return (
+    <g className="pd-fade" style={{ opacity: MATCH_STEPS.includes(step) ? 1 : 0 }}>
+      {boxes.map((box, i) => (
+        <rect
+          key={i}
+          x={box.x - pad}
+          y={box.y - pad}
+          width={box.width + 2 * pad}
+          height={box.height + 2 * pad}
+          rx={4}
+          fill="none"
+          stroke={INK}
+          strokeWidth={2}
+        />
+      ))}
+    </g>
+  );
 }
 
 function DeviceRow({ device, m }) {
@@ -182,6 +214,9 @@ export default function TpPair() {
             arriving={cell.arriving}
             late={cell.late}
           />
+        ))}
+        {DEVICES.map((d) => (
+          <Match key={`match-${d}`} device={d} step={step} m={m} />
         ))}
       </DiagramSvg>
       <Legend

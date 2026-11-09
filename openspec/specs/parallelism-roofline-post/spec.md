@@ -18,17 +18,17 @@ The article SHALL use simple, concise, plain-language technical prose of about 2
 
 ### Requirement: The opening defines the example, the ratio, and the roofline once
 
-The opening SHALL introduce the example matmul `X[T, E] @ W[E, E] → Y[T, E]`, define $X$, $W$, $Y$, $T$, $E$, and $P$, and state that the forward pass takes about $2TE^2$ operations and a training step about $6TE^2$. It SHALL define a roofline once, as a bound from peak compute and the rate data can reach a device, using the network in place of the original model's memory bandwidth. It SHALL define the ratio of operations per device to values moved per device, counted for one layer over a training step, and say the counts show scaling rather than real-system limits.
+The opening SHALL introduce the example matmul `X[T, E] @ W[E, E] → Y[T, E]`, define $X$, $W$, $Y$, $T$, $E$, and $P$, and state that the forward pass takes about $2TE^2$ operations and a training step about $6TE^2$. It SHALL define a roofline once, as a bound from peak compute and the rate data can reach a device over the network, without discussing the history of the roofline model. It SHALL define the ratio of operations per device to values moved per device, counted for one layer over a training step, and say the counts show scaling rather than real-system limits.
 
 #### Scenario: A reader knows how each section is organized
 
 - **WHEN** the reader reaches the first method
-- **THEN** they know every section covers what is split, what moves, overlap, the ratio, and the limit
+- **THEN** they know every section covers what is split, what moves, overlap, the ratio, and the overall effect
 - **AND** they know a collective is defined in the appendix
 
 ### Requirement: Every method follows one unlabeled order
 
-Each of the seven methods SHALL cover, in order and without visible labels: what is split, what moves, whether the transfer can overlap with computation, the ratio, and the limit. Each method SHALL give one tensor-shape line and one final ratio with its constant.
+Each of the seven methods SHALL cover, in order and without visible labels: what is split, what moves, whether the transfer can overlap with computation, the ratio, and the overall effect. The overall effect SHALL say what the method shrinks on each device, what it leaves unchanged, and how far it scales before communication or another limit takes over. Each method SHALL give one tensor-shape line and one final ratio with its constant.
 
 #### Scenario: Two sections read back to back
 
@@ -48,9 +48,9 @@ Each ratio SHALL count one layer over a full training step. The body, the summar
 
 ### Requirement: Method facts are stated accurately
 
-- Data parallelism SHALL say every device stores the full weights, gradients, and optimizer state, and that only the last gradient all-reduce lacks computation to overlap with.
-- FSDP SHALL name two all-gathers of $W$ and one reduce-scatter of $\partial W$ per layer, and say that gathering ahead holds the next layer's weights too.
-- Tensor parallelism SHALL explain column- and row-parallel layers, say a column/row pair needs no transfer between the layers, and say the final collective is usually an all-reduce, or a reduce-scatter when the next layer takes split input. Overlap SHALL be described as depending on chunking.
+- Data parallelism SHALL say every device stores the full weights, gradients, and optimizer state, and that only the last gradient all-reduce lacks computation to overlap with. It SHALL explain the overlap by what each block waits for: each layer needs only $\partial X$ from the layer above it, and only the optimizer needs the summed gradients. It SHALL explain the $\sim 2E^2$ count as the two halves of an all-reduce, each about $E^2$ values per device.
+- FSDP SHALL name two all-gathers of $W$ and one reduce-scatter of $\partial W$ per layer, and say that gathering ahead holds the next layer's weights too. It SHALL show that each device's unreduced $\partial W$ is full size, and that the reduce-scatter leaves each device the summed piece matching its piece of $W$, while data parallelism's all-reduce adds an all-gather.
+- Tensor parallelism SHALL explain column- and row-parallel layers, say a column/row pair needs no transfer between the layers, and say the final collective is usually an all-reduce, or a reduce-scatter when the next layer takes split input. Overlap SHALL be described as depending on chunking, and SHALL say the chunks are token rows, which neither form splits across devices.
 - Ring attention SHALL make overlap conditional on each transfer finishing within one block's compute, and SHALL name causal-mask imbalance as its limit.
 - Ulysses SHALL show `[N, A, S/P, H] → [N, A/P, S, H]`, say $P$ can't exceed $A$ and the split is only even when $P$ divides $A$, and note that grouped-query and multi-query attention can lower this limit.
 - Ring and Ulysses SHALL be compared per device: ring moves about $P/2$ times more data in the forward pass and about $P$ times more in the backward pass.
@@ -69,9 +69,10 @@ Every diagram SHALL use the shared parts in `diagram-kit.jsx`: no cards, the sit
 The article SHALL render these diagrams:
 
 - `MatmulExample` for the opening matmul
-- `ShardingStage` for data parallelism, FSDP, column-parallel, and row-parallel layers
-- `Timeline` for the data parallelism, FSDP, chunked tensor parallelism, and ring vs. Ulysses schedules
-- `TpPair` for a column-parallel layer followed by a row-parallel layer
+- `ShardingStage` for data parallelism, FSDP, the FSDP weight gradient (with a data parallelism toggle), column-parallel, and row-parallel layers
+- `Timeline` for the data parallelism, FSDP, and ring vs. Ulysses schedules
+- `TpChunks` for a row-parallel layer computed in chunks of token rows, with the matmul and its timeline built one chunk per step and a toggle for no chunks
+- `TpPair` for a column-parallel layer followed by a row-parallel layer, with a step that outlines each device's column of H next to its matching row of W₂
 - `RingAttention` for the ring and the blocks each device has seen
 - `UlyssesAttention` for one tensor under two splits
 - `ExpertRouting` for both expert methods, with the same layout, top-2 routing, and a hot-expert toggle
