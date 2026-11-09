@@ -117,6 +117,10 @@
   visibility: visible;
 }
 
+.pd-nowrap {
+  white-space: nowrap;
+}
+
 .pd-controls {
   display: flex;
   align-items: center;
