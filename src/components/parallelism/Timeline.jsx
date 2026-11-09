@@ -36,7 +36,6 @@ const ARROW_COLOR = 'rgba(41, 37, 36, 0.7)';
 
 export const compute = (key, lane, label, short, start, dur) => ({ key, lane, label, short, start, dur, kind: 'compute' });
 export const transfer = (key, lane, label, short, start, dur) => ({ key, lane, label, short, start, dur, kind: 'transfer' });
-const onlyIn = (step, block) => ({ ...block, shown: [0, 1].map((s) => s === step) });
 
 const LANES = [
   { id: 'c', label: 'compute' },
@@ -76,23 +75,6 @@ const SCHEDULES = {
     lines: [
       'Without gathering ahead, each layer waits for its all-gather.',
       'Gathering ahead: each all-gather runs during the previous layer. Only the first one adds time.',
-    ],
-  },
-  'tp-chunks': {
-    label: 'Row-parallel layer, without and with chunks',
-    groups: [{ lanes: LANES }],
-    // The unchunked blocks fade out as the chunks fade in and slide into place.
-    blocks: [
-      onlyIn(0, compute('whole-c', 'c', 'whole matmul', 'matmul', 0, 16)),
-      onlyIn(0, transfer('whole-n', 'n', 'all-reduce', '', 16, 16)),
-      ...[1, 2, 3, 4].map((chunk, i) => onlyIn(1, compute(`c${chunk}`, 'c', `chunk ${chunk}`, `${chunk}`, 4 * i, 4))),
-      ...[1, 2, 3, 4].map((chunk, i) =>
-        onlyIn(1, transfer(`n${chunk}`, 'n', `chunk ${chunk}`, `${chunk}`, [16 + 4 * i, 4 * (i + 1)], 4)),
-      ),
-    ],
-    lines: [
-      'Without chunks, the all-reduce waits for the whole matmul.',
-      'With chunks, each chunk’s all-reduce runs while the next chunk computes.',
     ],
   },
   // Forward pass on 4 devices. A ring block takes 4 units to compute, and the

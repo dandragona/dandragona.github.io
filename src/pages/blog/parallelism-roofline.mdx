@@ -20,6 +20,8 @@ import ShardingStage from '../../components/parallelism/ShardingStage.jsx';
 
 import Timeline from '../../components/parallelism/Timeline.jsx';
 
+import TpChunks from '../../components/parallelism/TpChunks.jsx';
+
 import TpPair from '../../components/parallelism/TpPair.jsx';
 
 import UlyssesAttention from '../../components/parallelism/UlyssesAttention.jsx';
@@ -114,13 +116,15 @@ $$
 
 <ShardingStage strategy="tp-row" client:visible />
 
-The output of a column-parallel layer is exactly the input a row-parallel layer needs, even with an elementwise nonlinearity between them. So a column-parallel layer followed by a row-parallel layer needs nothing moved between them. It needs one collective at the end, usually an all-reduce, because the layers between pairs need all of $Y$. A reduce-scatter can instead leave each device with some rows of $Y$, as in the diagram above, with an all-gather rebuilding $Y$ before the next pair. This moves the same amount of data, and the layers in between work on $1/P$ of the rows. The backward pass also needs one collective per pair.
+The output of a column-parallel layer is already split by columns across devices, which is exactly the input a row-parallel layer needs. This holds even with an elementwise nonlinearity between them, because it works on each value separately. So a column-parallel layer followed by a row-parallel layer needs nothing moved between them. Below, $H$ is the first layer's output and the second layer's input:
 
 <TpPair client:visible />
 
-That final collective normally makes computation wait, because the next layer needs its result. It can overlap if the layer is computed in chunks of rows: each chunk's all-reduce runs while the next chunk computes. The implementation has to split the matmul and start each chunk's transfer as soon as the chunk is done, so this isn't automatic.
+The pair needs one collective at the end, usually an all-reduce, because the layers between pairs need all of $Y$. This leaves $Y$ on every device, as $X$ was at the start. A reduce-scatter can instead leave each device with some rows of $Y$, as in the row-parallel diagram above, with an all-gather rebuilding $Y$ before the next pair. This moves the same amount of data, and the layers in between work on $1/P$ of the rows. The backward pass also needs one collective per pair.
 
-<Timeline schedule="tp-chunks" client:visible />
+That final collective normally makes computation wait, because the next layer needs its result. It can overlap if each device splits its work into chunks of token rows. These chunks don't come from the column or row split, which both split $E$: every device still has all $T$ rows. A row of the output depends only on the same row of the input, so a device can compute its rows one chunk at a time and all-reduce each chunk while the next one computes. The column-parallel layer can be chunked the same way, so each chunk can run through the whole pair before its all-reduce. The implementation has to split the matmul and start each chunk's transfer itself, so this isn't automatic.
+
+<TpChunks client:visible />
 
 For a pair of layers, each device computes $\sim 12TE^2/P$ operations. The pair's two all-reduces, one in each pass, move $\sim 4TE$ values per device. $T$ cancels, so the ratio is about $3E/P$.
 
