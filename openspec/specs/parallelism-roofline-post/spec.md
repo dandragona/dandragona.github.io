@@ -18,17 +18,17 @@ The article SHALL use simple, concise, plain-language technical prose of about 2
 
 ### Requirement: The opening defines the example, the ratio, and the roofline once
 
-The opening SHALL introduce the example matmul `X[T, E] @ W[E, E] → Y[T, E]`, define $X$, $W$, $Y$, $T$, $E$, and $P$, and state that the forward pass takes about $2TE^2$ operations and a training step about $6TE^2$. It SHALL define a roofline once, as a bound from peak compute and the rate data can reach a device, using the network in place of the original model's memory bandwidth. It SHALL define the ratio of operations per device to values moved per device, counted for one layer over a training step, and say the counts show scaling rather than real-system limits.
+The opening SHALL introduce the example matmul `X[T, E] @ W[E, E] → Y[T, E]`, define $X$, $W$, $Y$, $T$, $E$, and $P$, and state that the forward pass takes about $2TE^2$ operations and a training step about $6TE^2$. It SHALL define a roofline once, as a bound from peak compute and the rate data can reach a device over the network, without discussing the history of the roofline model. It SHALL define the ratio of operations per device to values moved per device, counted for one layer over a training step, and say the counts show scaling rather than real-system limits.
 
 #### Scenario: A reader knows how each section is organized
 
 - **WHEN** the reader reaches the first method
-- **THEN** they know every section covers what is split, what moves, overlap, the ratio, and the limit
+- **THEN** they know every section covers what is split, what moves, overlap, the ratio, and the overall effect
 - **AND** they know a collective is defined in the appendix
 
 ### Requirement: Every method follows one unlabeled order
 
-Each of the seven methods SHALL cover, in order and without visible labels: what is split, what moves, whether the transfer can overlap with computation, the ratio, and the limit. Each method SHALL give one tensor-shape line and one final ratio with its constant.
+Each of the seven methods SHALL cover, in order and without visible labels: what is split, what moves, whether the transfer can overlap with computation, the ratio, and the overall effect. The overall effect SHALL say what the method shrinks on each device, what it leaves unchanged, and how far it scales before communication or another limit takes over. Each method SHALL give one tensor-shape line and one final ratio with its constant.
 
 #### Scenario: Two sections read back to back
 
