@@ -49,7 +49,7 @@ Each ratio SHALL count one layer over a full training step. The body, the summar
 ### Requirement: Method facts are stated accurately
 
 - Data parallelism SHALL say every device stores the full weights, gradients, and optimizer state, and that only the last gradient all-reduce lacks computation to overlap with. It SHALL explain the overlap by what each block waits for: each layer needs only $\partial X$ from the layer above it, and only the optimizer needs the summed gradients. It SHALL explain the $\sim 2E^2$ count as the two halves of an all-reduce, each about $E^2$ values per device.
-- FSDP SHALL name two all-gathers of $W$ and one reduce-scatter of $\partial W$ per layer, and say that gathering ahead holds the next layer's weights too.
+- FSDP SHALL name two all-gathers of $W$ and one reduce-scatter of $\partial W$ per layer, and say that gathering ahead holds the next layer's weights too. It SHALL show that each device's unreduced $\partial W$ is full size, and that the reduce-scatter leaves each device the summed piece matching its piece of $W$, while data parallelism's all-reduce adds an all-gather.
 - Tensor parallelism SHALL explain column- and row-parallel layers, say a column/row pair needs no transfer between the layers, and say the final collective is usually an all-reduce, or a reduce-scatter when the next layer takes split input. Overlap SHALL be described as depending on chunking.
 - Ring attention SHALL make overlap conditional on each transfer finishing within one block's compute, and SHALL name causal-mask imbalance as its limit.
 - Ulysses SHALL show `[N, A, S/P, H] → [N, A/P, S, H]`, say $P$ can't exceed $A$ and the split is only even when $P$ divides $A$, and note that grouped-query and multi-query attention can lower this limit.
@@ -69,7 +69,7 @@ Every diagram SHALL use the shared parts in `diagram-kit.jsx`: no cards, the sit
 The article SHALL render these diagrams:
 
 - `MatmulExample` for the opening matmul
-- `ShardingStage` for data parallelism, FSDP, column-parallel, and row-parallel layers
+- `ShardingStage` for data parallelism, FSDP, the FSDP weight gradient (with a data parallelism toggle), column-parallel, and row-parallel layers
 - `Timeline` for the data parallelism, FSDP, chunked tensor parallelism, and ring vs. Ulysses schedules
 - `TpPair` for a column-parallel layer followed by a row-parallel layer
 - `RingAttention` for the ring and the blocks each device has seen

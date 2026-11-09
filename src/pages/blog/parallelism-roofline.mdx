@@ -74,7 +74,17 @@ Fully sharded data parallelism (FSDP) splits the rows the same way, and also spl
 
 <ShardingStage strategy="fsdp" client:visible />
 
-Each layer has three transfers: an all-gather of $W$ in the forward pass, another in the backward pass, and a [reduce-scatter](#reduce-scatter) of $\partial W$, which sums values across devices and leaves each device with one piece of the result. Together, they move about 1.5 times as much data as data parallelism's all-reduce. Keeping the gathered $W$ through the backward pass removes one all-gather but uses more memory.
+Each layer has three transfers: an all-gather of $W$ in the forward pass, another in the backward pass to compute $\partial X$, and a [reduce-scatter](#reduce-scatter) of $\partial W$. As in data parallelism, each device computes $\partial W$ from its own rows:
+
+$$
+X^\top[E, T/P] \; @ \; \partial Y[T/P, E] \rightarrow \partial W[E, E]
+$$
+
+The result is full size but only part of the sum. The reduce-scatter adds these partial results across devices and leaves each device only the summed piece that matches its piece of $W$. That is all its optimizer needs, because each device updates only its own piece of $W$. Data parallelism's all-reduce is the same reduce-scatter followed by an all-gather, which gives every device the whole sum.
+
+<ShardingStage strategy="fsdp-grad" client:visible />
+
+Each of the three transfers is half of an all-reduce, so each moves about $E^2$ values per device. Together they move 1.5 times as much data as data parallelism's all-reduce. Keeping the gathered $W$ through the backward pass removes one all-gather but uses more memory.
 
 A device can gather the next layer's weights while it computes the current layer. If the gather finishes first, computation never waits for it. Only the first gather and the last reduce-scatter have no computation to overlap with.
 
