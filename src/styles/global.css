@@ -1,4 +1,15 @@
-@import url('https://fonts.googleapis.com/css2?family=Source+Code+Pro&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Source+Code+Pro:wght@400;700&display=swap');
+
+/* Bold text uses the 700 weight. Headings keep the regular weight they
+   rendered with when only the 400 weight was loaded. */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+    font-weight: 400;
+}
 
 body {
     background-color: #d5bbb1;
