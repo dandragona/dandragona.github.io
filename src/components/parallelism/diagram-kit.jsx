@@ -12,6 +12,12 @@ export const ZERO_COLOR = 'rgba(255, 255, 255, 0.7)';
 export const EMPTY_COLOR = 'rgba(41, 37, 36, 0.1)';
 export const INK = '#292524';
 
+// Diagrams draw B = 2 sequences of S = 2 tokens. Token rows are drawn one
+// sequence per block, with extra space between sequences.
+export const SEQUENCE_LENGTH = 2;
+export const SEQUENCE_GAP = 6;
+export const sequenceOffset = (token) => Math.floor(token / SEQUENCE_LENGTH) * SEQUENCE_GAP;
+
 const HatchContext = createContext(null);
 
 export function useFigureWidth(initialWidth = 800) {

@@ -3,6 +3,7 @@ import {
   DEVICE_COLORS,
   COPY_COLOR,
   EMPTY_COLOR,
+  sequenceOffset,
   useFigureWidth,
   Figure,
   DiagramSvg,
@@ -16,10 +17,13 @@ import {
 
 // One matmul on two devices: X @ W = Y, or the weight gradient Xᵀ @ ∂Y = ∂W.
 // A tensor is drawn in full on each device; a colored cell is held there and an
-// empty one is held elsewhere.
+// empty one is held elsewhere. The devices sit side by side, or one above the
+// other on narrow screens. X holds B = 2 sequences of 2 tokens, so T = 4 token
+// rows, and splitting the rows in half gives each device one sequence.
 
 const T = 4;
 const E = 2;
+const F = 4;
 const DEVICES = [0, 1];
 const GAP = 2;
 const SYMBOL_WIDTH = 22;
@@ -28,6 +32,7 @@ const DEVICE_GAP = 28;
 const COMPACT_SYMBOL_WIDTH = 16;
 const COMPACT_DEVICE_GAP = 20;
 const MIN_CELL = 14;
+const STACK_GAP = 14;
 const HEADER_HEIGHT = 22;
 const LABEL_HEIGHT = 22;
 
@@ -35,10 +40,11 @@ const COPY_ITEM = { fill: COPY_COLOR, label: 'copy on every device' };
 const ELSEWHERE_ITEM = { fill: EMPTY_COLOR, label: 'on the other device' };
 const PARTIAL_ITEM = { fill: DEVICE_COLORS[0], hatched: true, label: 'partial sum' };
 
+// `tokens` marks the axis that runs over tokens, drawn in sequence blocks.
 const FORWARD = [
-  { name: 'X', rows: T, cols: E },
-  { name: 'W', rows: E, cols: E },
-  { name: 'Y', rows: T, cols: E },
+  { name: 'X', rows: T, cols: E, tokens: 'rows' },
+  { name: 'W', rows: E, cols: F },
+  { name: 'Y', rows: T, cols: F, tokens: 'rows' },
 ];
 
 const GRADIENT = [
@@ -54,12 +60,14 @@ const GRADIENT = [
     ),
     rows: E,
     cols: T,
+    tokens: 'cols',
   },
-  { name: 'dY', label: '∂Y', rows: T, cols: E },
-  { name: 'dW', label: '∂W', rows: E, cols: E },
+  { name: 'dY', label: '∂Y', rows: T, cols: F, tokens: 'rows' },
+  { name: 'dW', label: '∂W', rows: E, cols: F },
 ];
 
 const rowOwner = (r) => Math.floor((r * DEVICES.length) / T);
+const HALF_F = F / DEVICES.length;
 
 function allCells(tensor, rows, cols, build) {
   return Array.from({ length: rows * cols }, (_, i) => {
@@ -69,8 +77,8 @@ function allCells(tensor, rows, cols, build) {
   });
 }
 
-function ownedRows(tensor, d) {
-  return allCells(tensor, T, E, (r, c) => ({
+function ownedRows(tensor, cols, d) {
+  return allCells(tensor, T, cols, (r, c) => ({
     key: `${tensor}-${d}-${r}-${c}`,
     device: d,
     fill: DEVICE_COLORS[d],
@@ -84,40 +92,40 @@ const STRATEGIES = {
     lines: [],
     cells: () =>
       DEVICES.flatMap((d) => [
-        ...ownedRows('X', d),
-        ...allCells('W', E, E, (r, c) => ({ key: `W-${d}-${r}-${c}`, device: d, fill: COPY_COLOR })),
-        ...ownedRows('Y', d),
+        ...ownedRows('X', E, d),
+        ...allCells('W', E, F, (r, c) => ({ key: `W-${d}-${r}-${c}`, device: d, fill: COPY_COLOR })),
+        ...ownedRows('Y', F, d),
       ]),
   },
   fsdp: {
     label: 'FSDP on two devices',
     legend: [ELSEWHERE_ITEM],
     lines: [
-      'Each device holds its rows of X and one row of W.',
+      'Each device holds one sequence of X and one row of W.',
       'All-gather: each device receives the rest of W.',
-      'Each device runs the matmul on its rows.',
+      'Each device runs the matmul on its sequence.',
       'Each device frees the row of W it received.',
     ],
     cells: (step) =>
       DEVICES.flatMap((d) => {
         const other = 1 - d;
         return [
-          ...ownedRows('X', d),
-          ...allCells('W', 1, E, (_r, c) => ({
+          ...ownedRows('X', E, d),
+          ...allCells('W', 1, F, (_r, c) => ({
             key: `W-${d}-${c}`,
             device: d,
             r: d,
             fill: DEVICE_COLORS[d],
           })),
           // A received row starts under the sender's copy, then travels here.
-          ...allCells('W', 1, E, (_r, c) => ({
+          ...allCells('W', 1, F, (_r, c) => ({
             key: `W-copy-${d}-${c}`,
             device: step === 0 ? other : d,
             r: other,
             fill: DEVICE_COLORS[other],
             opacity: step === 1 || step === 2 ? 1 : 0,
           })),
-          ...ownedRows('Y', d).map((cell) => ({ ...cell, opacity: step >= 2 ? 1 : 0 })),
+          ...ownedRows('Y', F, d).map((cell) => ({ ...cell, opacity: step >= 2 ? 1 : 0 })),
         ];
       }),
   },
@@ -125,17 +133,22 @@ const STRATEGIES = {
     label: 'Column-parallel tensor parallelism on two devices',
     legend: [COPY_ITEM, ELSEWHERE_ITEM],
     lines: [
-      'Every device has all of X and its own column of W.',
-      'Each device computes its own column of Y. Nothing moves.',
+      'Every device has all of X and its own columns of W.',
+      'Each device computes its own columns of Y. Nothing moves.',
     ],
     cells: (step) =>
       DEVICES.flatMap((d) => [
         ...allCells('X', T, E, (r, c) => ({ key: `X-${d}-${r}-${c}`, device: d, fill: COPY_COLOR })),
-        ...allCells('W', E, 1, (r) => ({ key: `W-${d}-${r}`, device: d, c: d, fill: DEVICE_COLORS[d] })),
-        ...allCells('Y', T, 1, (r) => ({
-          key: `Y-${d}-${r}`,
+        ...allCells('W', E, HALF_F, (r, c) => ({
+          key: `W-${d}-${r}-${c}`,
           device: d,
-          c: d,
+          c: d * HALF_F + c,
+          fill: DEVICE_COLORS[d],
+        })),
+        ...allCells('Y', T, HALF_F, (r, c) => ({
+          key: `Y-${d}-${r}-${c}`,
+          device: d,
+          c: d * HALF_F + c,
           fill: DEVICE_COLORS[d],
           opacity: step >= 1 ? 1 : 0,
         })),
@@ -147,13 +160,13 @@ const STRATEGIES = {
     lines: [
       'Each device has one column of X and one row of W.',
       'Each device computes a full-sized Y, but it is only a partial sum.',
-      'Reduce-scatter: each device sends the rows it doesn’t keep and adds the rows it receives. Each device ends with half of the rows of Y, finished.',
+      'Reduce-scatter: each device sends the rows it doesn’t keep and adds the rows it receives. Each device ends with half of the token rows of Y, finished.',
     ],
     cells: (step) =>
       DEVICES.flatMap((d) => [
         ...allCells('X', T, 1, (r) => ({ key: `X-${d}-${r}`, device: d, c: d, fill: DEVICE_COLORS[d] })),
-        ...allCells('W', 1, E, (_r, c) => ({ key: `W-${d}-${c}`, device: d, r: d, fill: DEVICE_COLORS[d] })),
-        ...allCells('Y', T, E, (r, c) => {
+        ...allCells('W', 1, F, (_r, c) => ({ key: `W-${d}-${c}`, device: d, r: d, fill: DEVICE_COLORS[d] })),
+        ...allCells('Y', T, F, (r, c) => {
           const kept = rowOwner(r) === d;
           return {
             key: `Y-${d}-${r}-${c}`,
@@ -179,8 +192,8 @@ const STRATEGIES = {
         value: 'fsdp',
         label: 'FSDP',
         lines: [
-          'Each device has ∂Y for its own token rows, and the matching columns of Xᵀ.',
-          'Each device computes a full-sized ∂W, but it is only a partial sum over its own rows.',
+          'Each device has ∂Y for its own sequence, and the matching columns of Xᵀ.',
+          'Each device computes a full-sized ∂W, but it is only a partial sum over its own tokens.',
           'Reduce-scatter: each device sends the row of ∂W it doesn’t keep and adds the row it receives. Each device ends with the finished row of ∂W that matches its row of W.',
         ],
       },
@@ -188,8 +201,8 @@ const STRATEGIES = {
         value: 'dp',
         label: 'Data parallelism',
         lines: [
-          'Each device has ∂Y for its own token rows, and the matching columns of Xᵀ.',
-          'Each device computes a full-sized ∂W, but it is only a partial sum over its own rows.',
+          'Each device has ∂Y for its own sequence, and the matching columns of Xᵀ.',
+          'Each device computes a full-sized ∂W, but it is only a partial sum over its own tokens.',
           'Reduce-scatter: each device sends the row of ∂W it doesn’t keep and adds the row it receives. Each device has one finished row.',
           'All-gather: each device sends its finished row to the other. Every device ends with all of ∂W, to update all of W.',
         ],
@@ -200,8 +213,8 @@ const STRATEGIES = {
         ...allCells('Xt', E, T, () => ({ device: d, fill: DEVICE_COLORS[d] }))
           .filter((cell) => rowOwner(cell.c) === d)
           .map((cell) => ({ ...cell, key: `Xt-${d}-${cell.r}-${cell.c}` })),
-        ...ownedRows('dY', d),
-        ...allCells('dW', E, E, (r, c) => {
+        ...ownedRows('dY', F, d),
+        ...allCells('dW', E, F, (r, c) => {
           // Device r keeps row r, the row that matches its row of W.
           const kept = r === d;
           const sent = step >= 2 && !kept;
@@ -217,7 +230,7 @@ const STRATEGIES = {
         }),
         // All-gather: a copy of this device's finished row starts under it, then
         // travels to the other device.
-        ...allCells('dW', 1, E, (_r, c) => ({
+        ...allCells('dW', 1, F, (_r, c) => ({
           key: `dW-copy-${d}-${c}`,
           device: step === 3 ? 1 - d : d,
           r: d,
@@ -228,31 +241,52 @@ const STRATEGIES = {
   },
 };
 
+// Extra width or height a tensor gets from the space between sequences.
+const extraCols = (tensor) => (tensor.tokens === 'cols' ? sequenceOffset(tensor.cols - 1) : 0);
+const extraRows = (tensor) => (tensor.tokens === 'rows' ? sequenceOffset(tensor.rows - 1) : 0);
+
 function measure(width, tensors) {
   const cols = tensors.reduce((sum, tensor) => sum + tensor.cols, 0);
-  const fit = (symbolWidth, deviceGap) =>
-    Math.floor(((width - deviceGap) / 2 - 2 * symbolWidth + tensors.length * GAP) / cols - GAP);
-  const compact = fit(SYMBOL_WIDTH, DEVICE_GAP) < MIN_CELL;
-  const symbolWidth = compact ? COMPACT_SYMBOL_WIDTH : SYMBOL_WIDTH;
-  const deviceGap = compact ? COMPACT_DEVICE_GAP : DEVICE_GAP;
-  const size = Math.max(10, Math.min(24, fit(symbolWidth, deviceGap)));
+  const extra = tensors.reduce((sum, tensor) => sum + extraCols(tensor), 0);
+  const fit = (across, symbolWidth, deviceGap) =>
+    Math.floor(
+      ((width - (across - 1) * deviceGap) / across - 2 * symbolWidth - extra + tensors.length * GAP) / cols - GAP,
+    );
+  // Prefer side by side, then tighter spacing, then one device above the other.
+  const layouts = [
+    { stacked: false, symbolWidth: SYMBOL_WIDTH, deviceGap: DEVICE_GAP },
+    { stacked: false, symbolWidth: COMPACT_SYMBOL_WIDTH, deviceGap: COMPACT_DEVICE_GAP },
+  ];
+  const layout = layouts.find((option) => fit(2, option.symbolWidth, option.deviceGap) >= MIN_CELL) ?? {
+    stacked: true,
+    symbolWidth: SYMBOL_WIDTH,
+    deviceGap: STACK_GAP,
+  };
+  const { stacked, symbolWidth, deviceGap } = layout;
+  const size = Math.max(10, Math.min(24, fit(stacked ? 1 : 2, symbolWidth, deviceGap)));
   const pitch = size + GAP;
   const span = (n) => n * pitch - GAP;
-  const tallHeight = span(Math.max(...tensors.map((tensor) => tensor.rows)));
+  const tensorHeight = (tensor) => span(tensor.rows) + extraRows(tensor);
+  const tallHeight = Math.max(...tensors.map(tensorHeight));
+  const byName = {};
   const tensorX = {};
   const tensorY = {};
   const tensorWidth = {};
   let x = 0;
   for (const tensor of tensors) {
+    byName[tensor.name] = tensor;
     tensorX[tensor.name] = x;
-    tensorWidth[tensor.name] = span(tensor.cols);
+    tensorWidth[tensor.name] = span(tensor.cols) + extraCols(tensor);
     // Shorter tensors are centered on the tallest one.
-    tensorY[tensor.name] = HEADER_HEIGHT + (tallHeight - span(tensor.rows)) / 2;
-    x += span(tensor.cols) + symbolWidth;
+    tensorY[tensor.name] = HEADER_HEIGHT + (tallHeight - tensorHeight(tensor)) / 2;
+    x += tensorWidth[tensor.name] + symbolWidth;
   }
   const deviceWidth = x - symbolWidth;
-  const left = Math.max(0, (width - 2 * deviceWidth - deviceGap) / 2);
-  const deviceX = (d) => left + d * (deviceWidth + deviceGap);
+  const deviceHeight = HEADER_HEIGHT + tallHeight + LABEL_HEIGHT;
+  const across = stacked ? 1 : 2;
+  const left = Math.max(0, (width - across * deviceWidth - (across - 1) * deviceGap) / 2);
+  const deviceX = (d) => (stacked ? left : left + d * (deviceWidth + deviceGap));
+  const deviceY = (d) => (stacked ? d * (deviceHeight + deviceGap) : 0);
   return {
     size,
     symbolWidth,
@@ -261,18 +295,22 @@ function measure(width, tensors) {
     tensorX,
     tensorWidth,
     deviceX,
-    height: HEADER_HEIGHT + tallHeight + LABEL_HEIGHT,
-    cellX: (device, tensor, c) => deviceX(device) + tensorX[tensor] + c * pitch,
-    cellY: (tensor, r) => tensorY[tensor] + r * pitch,
+    deviceY,
+    height: stacked ? 2 * deviceHeight + deviceGap : deviceHeight,
+    cellX: (device, tensor, c) =>
+      deviceX(device) + tensorX[tensor] + c * pitch + (byName[tensor].tokens === 'cols' ? sequenceOffset(c) : 0),
+    cellY: (device, tensor, r) =>
+      deviceY(device) + tensorY[tensor] + r * pitch + (byName[tensor].tokens === 'rows' ? sequenceOffset(r) : 0),
   };
 }
 
 function DeviceFrame({ device, tensors, m }) {
   const x = m.deviceX(device);
-  const symbolY = HEADER_HEIGHT + m.tallHeight / 2 + 5;
+  const top = m.deviceY(device);
+  const symbolY = top + HEADER_HEIGHT + m.tallHeight / 2 + 5;
   return (
     <g>
-      <text x={x + m.deviceWidth / 2} y={13} textAnchor="middle">
+      <text x={x + m.deviceWidth / 2} y={top + 13} textAnchor="middle">
         Device {device}
       </text>
       {tensors.flatMap((tensor) =>
@@ -280,7 +318,7 @@ function DeviceFrame({ device, tensors, m }) {
           <Slot
             key={`${tensor.name}-${i}`}
             x={m.cellX(device, tensor.name, i % tensor.cols)}
-            y={m.cellY(tensor.name, Math.floor(i / tensor.cols))}
+            y={m.cellY(device, tensor.name, Math.floor(i / tensor.cols))}
             size={m.size}
           />
         )),
@@ -289,7 +327,7 @@ function DeviceFrame({ device, tensors, m }) {
         <text
           key={tensor.name}
           x={x + m.tensorX[tensor.name] + m.tensorWidth[tensor.name] / 2}
-          y={HEADER_HEIGHT + m.tallHeight + 17}
+          y={top + HEADER_HEIGHT + m.tallHeight + 17}
           textAnchor="middle"
         >
           {tensor.label ?? tensor.name}
@@ -345,7 +383,7 @@ export default function ShardingStage({ strategy = 'dp' }) {
           <Cell
             key={cell.key}
             x={m.cellX(cell.device, cell.tensor, cell.c)}
-            y={m.cellY(cell.tensor, cell.r)}
+            y={m.cellY(cell.device, cell.tensor, cell.r)}
             size={m.size}
             fill={cell.fill}
             hatched={cell.hatched}

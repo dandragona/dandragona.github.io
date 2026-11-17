@@ -4,6 +4,7 @@ import {
   COPY_COLOR,
   EMPTY_COLOR,
   INK,
+  sequenceOffset,
   useFigureWidth,
   Figure,
   DiagramSvg,
@@ -37,6 +38,9 @@ import {
 
 const T = 4;
 const E = 2;
+const F = 4;
+// Each device holds half of F: columns of H and rows of W₂.
+const HALF_F = F / 2;
 const DEVICES = [0, 1];
 const GAP = 2;
 const SYMBOL_WIDTH = 22;
@@ -44,6 +48,7 @@ const DEVICE_GAP = 28;
 const COMPACT_SYMBOL_WIDTH = 16;
 const COMPACT_DEVICE_GAP = 20;
 const MIN_CELL = 14;
+const STACK_GAP = 14;
 const HEADER_HEIGHT = 22;
 const LABEL_HEIGHT = 22;
 const TIMELINE_GAP = 8;
@@ -51,11 +56,15 @@ const TIMELINE_GAP = 8;
 // one time axis, so their end markers can be compared.
 const UNITS = 2 * T;
 
+// `tokens` marks tensors whose rows are tokens: B = 2 sequences of 2 tokens,
+// drawn in sequence blocks.
 const TENSORS = [
-  { name: 'H', rows: T },
-  { name: 'W₂', rows: E },
-  { name: 'Y', rows: T },
+  { name: 'H', rows: T, cols: F, tokens: true },
+  { name: 'W₂', rows: F, cols: E },
+  { name: 'Y', rows: T, cols: E, tokens: true },
 ];
+const COLS = TENSORS.reduce((sum, tensor) => sum + tensor.cols, 0);
+const tensorByName = Object.fromEntries(TENSORS.map((tensor) => [tensor.name, tensor]));
 
 const LANES = [
   { id: 'c', label: 'compute' },
@@ -67,7 +76,7 @@ const MODES = [
     value: 'chunks',
     label: 'With chunks',
     lines: [
-      'Each device has one column of H, for all four token rows. Each row of Y needs only the same row of H, so a device can compute its rows in chunks. Here each row is one chunk.',
+      'Each device has its own columns of H, for all four token rows. Each row of Y needs only the same row of H, so a device can compute its rows in chunks. Here each row is one chunk.',
       'Chunk 1: each device computes its partial sum for row 1 of Y.',
       'Chunk 2 computes while chunk 1’s all-reduce runs. Row 1 of Y is now finished on every device.',
       'Chunk 3 computes while chunk 2’s all-reduce runs.',
@@ -79,7 +88,7 @@ const MODES = [
     value: 'whole',
     label: 'Without chunks',
     lines: [
-      'Each device has one column of H and one row of W₂, as in a row-parallel layer.',
+      'Each device has its own columns of H and rows of W₂, as in a row-parallel layer.',
       'Each device computes its partial sum for all of Y. The network is idle.',
       'Then the all-reduce runs, and computation waits for it, because the next layer needs Y.',
     ],
@@ -114,21 +123,24 @@ function cellsFor(mode, step) {
   return DEVICES.flatMap((d) => {
     const other = 1 - d;
     return [
-      ...Array.from({ length: T }, (_, r) => ({
-        key: `H-${d}-${r}`,
-        tensor: 'H',
-        device: d,
-        r,
-        c: d,
-        fill: DEVICE_COLORS[d],
-        label: mode === 'chunks' ? `${r + 1}` : undefined,
-      })),
-      ...Array.from({ length: E }, (_, c) => ({
-        key: `W-${d}-${c}`,
+      ...Array.from({ length: T * HALF_F }, (_, i) => {
+        const r = Math.floor(i / HALF_F);
+        return {
+          key: `H-${d}-${i}`,
+          tensor: 'H',
+          device: d,
+          r,
+          c: d * HALF_F + (i % HALF_F),
+          fill: DEVICE_COLORS[d],
+          label: mode === 'chunks' ? `${r + 1}` : undefined,
+        };
+      }),
+      ...Array.from({ length: HALF_F * E }, (_, i) => ({
+        key: `W-${d}-${i}`,
         tensor: 'W₂',
         device: d,
-        r: d,
-        c,
+        r: d * HALF_F + Math.floor(i / E),
+        c: i % E,
         fill: DEVICE_COLORS[d],
       })),
       ...Array.from({ length: T * E }, (_, i) => {
@@ -171,64 +183,87 @@ function cellsFor(mode, step) {
 }
 
 function measure(width) {
-  const fit = (symbolWidth, deviceGap) => Math.floor((width - 6 * GAP - 4 * symbolWidth - deviceGap) / 12);
-  // Narrow screens tighten the spacing before shrinking cells.
-  const compact = fit(SYMBOL_WIDTH, DEVICE_GAP) < MIN_CELL;
-  const symbolWidth = compact ? COMPACT_SYMBOL_WIDTH : SYMBOL_WIDTH;
-  const deviceGap = compact ? COMPACT_DEVICE_GAP : DEVICE_GAP;
-  const size = Math.max(10, Math.min(24, fit(symbolWidth, deviceGap)));
+  const fit = (across, symbolWidth, deviceGap) =>
+    Math.floor(((width - (across - 1) * deviceGap) / across - 2 * symbolWidth + TENSORS.length * GAP) / COLS - GAP);
+  // Prefer side by side, then tighter spacing, then one device above the other.
+  const layouts = [
+    { stacked: false, symbolWidth: SYMBOL_WIDTH, deviceGap: DEVICE_GAP },
+    { stacked: false, symbolWidth: COMPACT_SYMBOL_WIDTH, deviceGap: COMPACT_DEVICE_GAP },
+  ];
+  const layout = layouts.find((option) => fit(2, option.symbolWidth, option.deviceGap) >= MIN_CELL) ?? {
+    stacked: true,
+    symbolWidth: SYMBOL_WIDTH,
+    deviceGap: STACK_GAP,
+  };
+  const { stacked, symbolWidth, deviceGap } = layout;
+  const across = stacked ? 1 : 2;
+  const size = Math.max(10, Math.min(24, fit(across, symbolWidth, deviceGap)));
   const pitch = size + GAP;
-  const tensorWidth = E * pitch - GAP;
-  const tallHeight = T * pitch - GAP;
-  const deviceWidth = 3 * tensorWidth + 2 * symbolWidth;
-  const left = Math.max(0, (width - 2 * deviceWidth - deviceGap) / 2);
-  const deviceX = (d) => left + d * (deviceWidth + deviceGap);
-  const tensorX = (i) => i * (tensorWidth + symbolWidth);
-  const tensorIndex = Object.fromEntries(TENSORS.map((tensor, i) => [tensor.name, i]));
-  const offsetY = (rows) => (tallHeight - (rows * pitch - GAP)) / 2;
-  const axisTop = HEADER_HEIGHT + tallHeight + LABEL_HEIGHT + TIMELINE_GAP;
+  const span = (n) => n * pitch - GAP;
+  const tensorHeight = (tensor) => span(tensor.rows) + (tensor.tokens ? sequenceOffset(tensor.rows - 1) : 0);
+  const tallHeight = Math.max(...TENSORS.map(tensorHeight));
+  const tensorX = {};
+  let x = 0;
+  for (const tensor of TENSORS) {
+    tensorX[tensor.name] = x;
+    x += span(tensor.cols) + symbolWidth;
+  }
+  const deviceWidth = x - symbolWidth;
+  const deviceHeight = HEADER_HEIGHT + tallHeight + LABEL_HEIGHT;
+  const left = Math.max(0, (width - across * deviceWidth - (across - 1) * deviceGap) / 2);
+  const deviceX = (d) => (stacked ? left : left + d * (deviceWidth + deviceGap));
+  const deviceY = (d) => (stacked ? d * (deviceHeight + deviceGap) : 0);
+  const offsetY = (tensor) => (tallHeight - tensorHeight(tensor)) / 2;
+  const axisTop = deviceY(DEVICES.length - 1) + deviceHeight + TIMELINE_GAP;
   const laneY = { c: axisTop + AXIS_HEIGHT, n: axisTop + AXIS_HEIGHT + LANE_HEIGHT };
   return {
     size,
     pitch,
     symbolWidth,
-    tensorWidth,
     tallHeight,
     deviceWidth,
     deviceX,
-    tensorX,
+    deviceY,
+    tensorX: (name) => tensorX[name],
+    tensorWidth: (name) => span(tensorByName[name].cols),
     axisTop,
     laneY,
     height: laneY.n + LANE_HEIGHT + 4,
     scale: (width - LABEL_WIDTH - RIGHT_PAD) / UNITS,
-    cellX: (device, tensor, c) => deviceX(device) + tensorX(tensorIndex[tensor]) + c * pitch,
-    cellY: (tensor, r) => HEADER_HEIGHT + offsetY(TENSORS[tensorIndex[tensor]].rows) + r * pitch,
+    cellX: (device, tensor, c) => deviceX(device) + tensorX[tensor] + c * pitch,
+    cellY: (device, tensor, r) =>
+      deviceY(device) +
+      HEADER_HEIGHT +
+      offsetY(tensorByName[tensor]) +
+      r * pitch +
+      (tensorByName[tensor].tokens ? sequenceOffset(r) : 0),
   };
 }
 
 function DeviceFrame({ device, m }) {
   const x = m.deviceX(device);
-  const symbolY = HEADER_HEIGHT + m.tallHeight / 2 + 5;
+  const top = m.deviceY(device);
+  const symbolY = top + HEADER_HEIGHT + m.tallHeight / 2 + 5;
   return (
     <g>
-      <text x={x + m.deviceWidth / 2} y={13} textAnchor="middle">
+      <text x={x + m.deviceWidth / 2} y={top + 13} textAnchor="middle">
         Device {device}
       </text>
       {TENSORS.flatMap((tensor) =>
-        Array.from({ length: tensor.rows * E }, (_, i) => (
+        Array.from({ length: tensor.rows * tensor.cols }, (_, i) => (
           <Slot
             key={`${tensor.name}-${i}`}
-            x={m.cellX(device, tensor.name, i % E)}
-            y={m.cellY(tensor.name, Math.floor(i / E))}
+            x={m.cellX(device, tensor.name, i % tensor.cols)}
+            y={m.cellY(device, tensor.name, Math.floor(i / tensor.cols))}
             size={m.size}
           />
         )),
       )}
-      {TENSORS.map((tensor, i) => (
+      {TENSORS.map((tensor) => (
         <text
           key={tensor.name}
-          x={x + m.tensorX(i) + m.tensorWidth / 2}
-          y={HEADER_HEIGHT + m.tallHeight + 17}
+          x={x + m.tensorX(tensor.name) + m.tensorWidth(tensor.name) / 2}
+          y={top + HEADER_HEIGHT + m.tallHeight + 17}
           textAnchor="middle"
         >
           {tensor.name}
@@ -238,7 +273,7 @@ function DeviceFrame({ device, m }) {
         <text
           key={symbol}
           className="pd-symbol"
-          x={x + m.tensorX(i + 1) - m.symbolWidth / 2}
+          x={x + m.tensorX(TENSORS[i + 1].name) - m.symbolWidth / 2}
           y={symbolY}
           textAnchor="middle"
         >
@@ -261,12 +296,12 @@ function CurrentChunk({ mode, step, m }) {
         key={`${tensor}-${d}`}
         className="pd-cell"
         style={{
-          transform: `translate(${m.cellX(d, tensor, 0) - pad}px, ${m.cellY(tensor, row) - pad}px)`,
+          transform: `translate(${m.cellX(d, tensor, 0) - pad}px, ${m.cellY(d, tensor, row) - pad}px)`,
           opacity: computing ? 1 : 0,
         }}
       >
         <rect
-          width={m.tensorWidth + 2 * pad}
+          width={m.tensorWidth(tensor) + 2 * pad}
           height={m.size + 2 * pad}
           rx={4}
           fill="none"
@@ -334,7 +369,7 @@ export default function TpChunks() {
           <Cell
             key={cell.key}
             x={m.cellX(cell.device, cell.tensor, cell.c)}
-            y={m.cellY(cell.tensor, cell.r)}
+            y={m.cellY(cell.device, cell.tensor, cell.r)}
             size={m.size}
             fill={cell.fill}
             hatched={cell.hatched}

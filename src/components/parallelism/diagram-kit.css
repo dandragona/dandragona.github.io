@@ -67,6 +67,14 @@
   }
 }
 
+/* This stylesheet loads only with the parallelism post. Its shape equations
+   are wider than a phone's column at full size. */
+@media (max-width: 420px) {
+  .post-content .katex-display {
+    font-size: 0.82em;
+  }
+}
+
 /* A dark outline drawn under the fill keeps white numbers readable on hatching. */
 .pd-svg text.pd-cell-label {
   fill: #fff;

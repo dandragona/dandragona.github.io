@@ -1,34 +1,36 @@
 import { useState } from 'react';
 import './diagram-kit.css';
 
-// Operations per value moved, per device, for one layer over a training step.
-// The formulas are the estimates worked out in each section, with constants.
+// Operations per value moved, per device, over a training step: one layer, or
+// one pair of layers for tensor parallelism and experts. The formulas are the
+// estimates worked out in each section, with constants.
 
 const SLIDERS = [
-  { id: 'T', name: 'tokens per step', min: 12, max: 22, initial: 20 },
+  { id: 'B', name: 'sequences per step', min: 0, max: 8, initial: 5 },
   { id: 'S', name: 'sequence length', min: 10, max: 20, initial: 15 },
-  { id: 'E', name: 'hidden width', min: 10, max: 15, initial: 13 },
+  { id: 'F', name: 'feed-forward width', min: 10, max: 16, initial: 14 },
   { id: 'P', name: 'devices in the group', min: 1, max: 10, initial: 3 },
   { id: 'k', name: 'experts per token', min: 1, max: 8, initial: 2, linear: true },
 ];
 
 const METHODS = [
-  { name: 'Data parallelism', formula: '3T/P', ratio: (v) => (3 * v.T) / v.P },
-  { name: 'FSDP', formula: '2T/P', ratio: (v) => (2 * v.T) / v.P },
-  { name: 'Tensor parallelism', formula: '3E/P', ratio: (v) => (3 * v.E) / v.P },
+  { name: 'Data parallelism', formula: '3BS/P', ratio: (v) => (3 * v.B * v.S) / v.P },
+  { name: 'FSDP', formula: '2BS/P', ratio: (v) => (2 * v.B * v.S) / v.P },
+  { name: 'Tensor parallelism', formula: '3F/P', ratio: (v) => (3 * v.F) / v.P },
   { name: 'Ring attention', formula: '2S/P', ratio: (v) => (2 * v.S) / v.P },
   { name: 'Ulysses attention', formula: '1.5S', ratio: (v) => 1.5 * v.S },
-  { name: 'Expert all-to-all', formula: '1.5E', ratio: (v) => 1.5 * v.E },
-  { name: 'Expert gather/scatter', formula: '1.5kE/P', ratio: (v) => (1.5 * v.k * v.E) / v.P },
+  { name: 'Expert all-to-all', formula: '3F', ratio: (v) => 3 * v.F },
+  { name: 'Expert gather/scatter', formula: '3kF/P', ratio: (v) => (3 * v.k * v.F) / v.P },
 ];
 
-// The bars use a log scale from 1 to 10 million.
-const MAX_DECADES = 7;
+// The bars use a log scale from 1 to 1 billion.
+const MAX_DECADES = 9;
 const TICKS = [
   [0, '1'],
   [2, '100'],
   [4, '10K'],
   [6, '1M'],
+  [8, '100M'],
 ];
 
 const value = (slider, setting) => (slider.linear ? setting : 2 ** setting);
@@ -41,6 +43,7 @@ function formatPowerOfTwo(n) {
 
 function formatRatio(n) {
   const short = (x) => String(Number(x.toPrecision(3)));
+  if (n >= 1e9) return `${short(n / 1e9)}B`;
   if (n >= 1e6) return `${short(n / 1e6)}M`;
   if (n >= 1e4) return `${short(n / 1e3)}K`;
   if (n >= 10) return Math.round(n).toLocaleString('en-US');
@@ -50,14 +53,7 @@ function formatRatio(n) {
 export default function RatioExplorer() {
   const [settings, setSettings] = useState(() => Object.fromEntries(SLIDERS.map((s) => [s.id, s.initial])));
 
-  // T counts every position of every sequence, so it can't be smaller than S.
-  const change = (id, setting) =>
-    setSettings((current) => {
-      const next = { ...current, [id]: setting };
-      if (id === 'S' && setting > next.T) next.T = setting;
-      if (id === 'T' && setting < next.S) next.S = setting;
-      return next;
-    });
+  const change = (id, setting) => setSettings((current) => ({ ...current, [id]: setting }));
 
   const values = Object.fromEntries(SLIDERS.map((s) => [s.id, value(s, settings[s.id])]));
 
