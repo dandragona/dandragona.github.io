@@ -13,8 +13,8 @@ import {
 } from './diagram-kit.jsx';
 
 // Eight devices in a 2 × 4 mesh: tensor parallelism across each row, data
-// parallelism down each column. Each device box shows which half of the token
-// rows (X) and which quarter of W's columns it holds.
+// parallelism down each column. Each device box shows which half of the batch
+// (X) and which quarter of W's columns it holds.
 
 const ROWS = 2;
 const COLS = 4;
@@ -26,9 +26,9 @@ const INNER_GAP = 8;
 const LABEL_HEIGHT = 16;
 
 const LINES = [
-  'Eight devices in a 2 × 4 mesh. Each device holds half of the token rows (X) and a quarter of the columns of W.',
-  'Tensor parallelism runs across each row: 4 devices with the same tokens and different columns of W.',
-  'Data parallelism runs down each column: 2 devices with the same columns of W and different tokens. They all-reduce ∂W.',
+  'Eight devices in a 2 × 4 mesh. Each device holds half of the batch (X) and a quarter of the columns of W.',
+  'Tensor parallelism runs across each row: 4 devices with the same sequences and different columns of W.',
+  'Data parallelism runs down each column: 2 devices with the same columns of W and different sequences. They all-reduce ∂W.',
 ];
 
 function measure(width) {
